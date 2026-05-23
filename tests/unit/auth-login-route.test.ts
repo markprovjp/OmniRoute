@@ -89,3 +89,43 @@ test("auth login route lazily migrates INITIAL_PASSWORD to a persisted hash befo
     true
   );
 });
+
+test("auth login route accepts a changed INITIAL_PASSWORD and persists the new hash", async () => {
+  process.env.INITIAL_PASSWORD = "new-bootstrap-secret";
+  await settingsDb.updateSettings({
+    requireLogin: true,
+    setupComplete: true,
+    password: await managementPassword.hashManagementPassword("old-bootstrap-secret"),
+  });
+  const setCalls: unknown[][] = [];
+  loginRoute.authRouteInternals.getCookieStore = async () => ({
+    set: (...args: unknown[]) => setCalls.push(args),
+  });
+
+  const response = await loginRoute.POST(
+    new Request("http://localhost/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: "new-bootstrap-secret" }),
+    })
+  );
+  const settings = await settingsDb.getSettings();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { success: true });
+  assert.equal(setCalls.length, 1);
+  assert.equal(
+    await managementPassword.verifyManagementPassword(
+      "new-bootstrap-secret",
+      (settings as any).password
+    ),
+    true
+  );
+  assert.equal(
+    await managementPassword.verifyManagementPassword(
+      "old-bootstrap-secret",
+      (settings as any).password
+    ),
+    false
+  );
+});

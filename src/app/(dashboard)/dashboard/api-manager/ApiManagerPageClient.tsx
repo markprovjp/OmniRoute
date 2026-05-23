@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback, memo } from "react";
-import { Card, Button, Input, Modal, CardSkeleton } from "@/shared/components";
+import { Card, Button, Input, Modal, CardSkeleton, Toggle } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useTranslations } from "next-intl";
 import { getProviderDisplayName } from "@/lib/display/names";
@@ -30,6 +30,16 @@ function sanitizeInput(input: string): string {
     .replace(/'/g, "")
     .trim()
     .slice(0, MAX_KEY_NAME_LENGTH);
+}
+
+function sanitizeNote(input: string): string {
+  return input.replace(/[<>]/g, "").trim().slice(0, 2000);
+}
+
+function extendExpiryByDays(value: string | null | undefined, days: number): string {
+  const current = value ? new Date(value).getTime() : Number.NaN;
+  const base = Number.isFinite(current) && current > Date.now() ? current : Date.now();
+  return new Date(base + days * 86400_000).toISOString();
 }
 
 // Validate key name
@@ -73,11 +83,40 @@ interface ApiKey {
   isBanned?: boolean;
   expiresAt?: string | null;
   maxSessions?: number;
+  maxRequestsPerDay?: number | null;
+  maxRequestsPerMinute?: number | null;
   accessSchedule?: AccessSchedule | null;
   rateLimits?: Array<{ limit: number; window: number }> | null;
   scopes?: string[];
+  customerName?: string | null;
+  internalNote?: string | null;
+  tokenLimit?: number | null;
+  dailyTokenLimit?: number | null;
+  hourlyTokenLimit?: number | null;
+  tokenUsed?: number;
+  commercialKey?: boolean;
+  usage?: KeyUsageStats;
+  quota?: KeyQuotaSnapshot;
   createdAt: string;
 }
+
+interface KeyQuotaWindow {
+  tokenLimit: number | null;
+  usedTokens: number;
+  reservedTokens: number;
+  requestLimit: number | null;
+  requestCount: number;
+  remainingTokens: number | null;
+  remainingRequests: number | null;
+  resetAt: string;
+}
+
+interface KeyQuotaSnapshot {
+  day?: KeyQuotaWindow | null;
+  hour?: KeyQuotaWindow | null;
+}
+
+type KeyStatusFilter = "all" | "active" | "limited" | "disabled" | "banned" | "expired";
 
 interface ProviderConnection {
   id: string;
@@ -88,12 +127,34 @@ interface ProviderConnection {
 
 interface KeyUsageStats {
   totalRequests: number;
+  todayRequests: number;
+  hourRequests?: number;
+  totalTokens: number;
+  todayTokens: number;
+  hourTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
   lastUsed: string | null;
+  estimatedFromWorkspace?: boolean;
 }
 
 interface Model {
   id: string;
   owned_by: string;
+}
+
+interface QrouterUpstream {
+  configured: boolean;
+  providerId: string | null;
+  connectionId: string | null;
+  name: string;
+  baseUrl: string;
+  prefix: string;
+  modelId: string;
+  model: string;
+  apiType: string;
+  keyCount: number;
+  isActive: boolean;
 }
 
 /** Tuple type for models grouped by provider: [providerName, models[]] */
@@ -108,6 +169,13 @@ export default function ApiManagerPageClient() {
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newInternalNote, setNewInternalNote] = useState("");
+  const [newTokenLimit, setNewTokenLimit] = useState("");
+  const [newDailyTokenLimit, setNewDailyTokenLimit] = useState("");
+  const [newHourlyTokenLimit, setNewHourlyTokenLimit] = useState("");
+  const [newRequestLimitDaily, setNewRequestLimitDaily] = useState("");
+  const [newExpiresAt, setNewExpiresAt] = useState("");
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [editingKey, setEditingKey] = useState<ApiKey | null>(null);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
@@ -119,16 +187,53 @@ export default function ApiManagerPageClient() {
   const [usageStats, setUsageStats] = useState<Record<string, KeyUsageStats>>({});
   const [sessionCounts, setSessionCounts] = useState<Record<string, number>>({});
   const [allowKeyReveal, setAllowKeyReveal] = useState(false);
+  const [qrouterUpstream, setQrouterUpstream] = useState<QrouterUpstream | null>(null);
+  const [upstreamApiKeys, setUpstreamApiKeys] = useState("");
+  const [upstreamError, setUpstreamError] = useState<string | null>(null);
+  const [upstreamSaving, setUpstreamSaving] = useState(false);
+  const [keySearch, setKeySearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<KeyStatusFilter>("all");
 
   const { copied, copy } = useCopyToClipboard();
+  const maxApiKeyRequests = useMemo(() => {
+    const maxRequests = Object.values(usageStats).reduce(
+      (max, stats) => Math.max(max, stats.totalRequests || 0),
+      0
+    );
+    return Math.max(1, maxRequests);
+  }, [usageStats]);
 
-  useEffect(() => {
-    fetchData();
-    fetchModels();
-    fetchConnections();
+  const fetchQrouterUpstream = useCallback(async () => {
+    try {
+      const res = await fetch("/api/qrouter-upstream");
+      if (!res.ok) return;
+      const data = await res.json();
+      setQrouterUpstream(data.upstream || null);
+    } catch (error) {
+      console.log("Error fetching QRouter upstream:", error);
+    }
   }, []);
 
-  const fetchModels = async () => {
+  const handleToggleQrouterUpstream = async (checked: boolean) => {
+    try {
+      const res = await fetch("/api/qrouter-upstream", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ isActive: !checked }),
+      });
+      if (res.ok) {
+        await fetchQrouterUpstream();
+      } else {
+        console.error("Failed to toggle QRouter upstream status");
+      }
+    } catch (error) {
+      console.error("Error toggling QRouter upstream status:", error);
+    }
+  };
+
+  const fetchModels = useCallback(async () => {
     try {
       const res = await fetch("/v1/models");
       if (res.ok) {
@@ -138,9 +243,9 @@ export default function ApiManagerPageClient() {
     } catch (error) {
       console.log("Error fetching models:", error);
     }
-  };
+  }, []);
 
-  const fetchConnections = async () => {
+  const fetchConnections = useCallback(async () => {
     try {
       const res = await fetch("/api/providers");
       if (res.ok) {
@@ -150,66 +255,49 @@ export default function ApiManagerPageClient() {
     } catch (error) {
       console.log("Error fetching connections:", error);
     }
-  };
+  }, []);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const res = await fetch("/api/keys");
       if (res.ok) {
         const data = await res.json();
-        setKeys(data.keys || []);
+        const loadedKeys: ApiKey[] = data.keys || [];
+        setKeys(loadedKeys);
         setAllowKeyReveal(data.allowKeyReveal === true);
-        // Fetch usage stats after keys are loaded
-        fetchUsageStats(data.keys || []);
-        fetchSessionCounts(data.keys || []);
+        setUsageStats(
+          Object.fromEntries(
+            loadedKeys.map((key) => [
+              key.id,
+              key.usage || {
+                totalRequests: 0,
+                todayRequests: 0,
+                hourRequests: 0,
+                totalTokens: 0,
+                todayTokens: 0,
+                hourTokens: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+                lastUsed: null,
+              },
+            ])
+          )
+        );
+        fetchSessionCounts(loadedKeys);
       }
     } catch (error) {
       console.log("Error fetching keys:", error);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const fetchUsageStats = async (apiKeys: ApiKey[]) => {
-    if (apiKeys.length === 0) return;
-    try {
-      // Fetch analytics (accurate aggregated counts) and recent call-logs
-      // (for lastUsed timestamps) in parallel.
-      // The previous approach matched call-logs by key.id === log.apiKeyId,
-      // but these use different ID schemes and never matched, yielding 0.
-      const [analyticsRes, logsRes] = await Promise.all([
-        fetch("/api/usage/analytics?range=all"),
-        fetch("/api/usage/call-logs?limit=1000"),
-      ]);
-      const analytics = analyticsRes.ok ? await analyticsRes.json() : null;
-      const byApiKey: any[] = analytics?.byApiKey || [];
-      const logs = logsRes.ok ? await logsRes.json() : [];
-      const stats: Record<string, KeyUsageStats> = {};
-      for (const key of apiKeys) {
-        // Match analytics entry by unique API Key ID (isolates usage to this specific key instance)
-        const matches = byApiKey.filter((entry: any) => entry.apiKeyId === key.id);
-        const totalRequests = matches.reduce(
-          (sum: number, entry: any) => sum + (Number(entry.requests) || 0),
-          0
-        );
-
-        // Match call logs by unique ID as well for the lastUsed timestamp
-        const lastUsed =
-          (logs || []).find((log: any) => log.apiKeyId === key.id)?.timestamp || null;
-        (logs || []).find(
-          (log: any) => log.apiKeyId === key.id || (!log.apiKeyId && log.apiKeyName === key.name)
-        )?.timestamp || null;
-
-        stats[key.id] = {
-          totalRequests,
-          lastUsed,
-        };
-      }
-      setUsageStats(stats);
-    } catch (e) {
-      console.log("Error fetching usage stats:", e);
-    }
-  };
+  useEffect(() => {
+    fetchData();
+    fetchModels();
+    fetchConnections();
+    fetchQrouterUpstream();
+  }, [fetchConnections, fetchData, fetchModels, fetchQrouterUpstream]);
 
   const fetchSessionCounts = async (apiKeys: ApiKey[]) => {
     if (apiKeys.length === 0) {
@@ -238,6 +326,40 @@ export default function ApiManagerPageClient() {
 
   const clearPageError = useCallback(() => setPageError(null), []);
 
+  const handleSaveQrouterUpstream = async () => {
+    const apiKeys = upstreamApiKeys
+      .split(/[\r\n,]+/)
+      .map((key) => key.trim())
+      .filter(Boolean);
+    if (apiKeys.length === 0) {
+      setUpstreamError("Nhap it nhat mot upstream key.");
+      return;
+    }
+
+    setUpstreamSaving(true);
+    setUpstreamError(null);
+    try {
+      const res = await fetch("/api/qrouter-upstream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKeys }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setUpstreamError(data.error || "Khong luu duoc upstream key.");
+        return;
+      }
+      setQrouterUpstream(data.upstream || null);
+      setUpstreamApiKeys("");
+      await Promise.all([fetchModels(), fetchConnections()]);
+    } catch (error) {
+      console.error("Error saving QRouter upstream:", error);
+      setUpstreamError("Khong luu duoc upstream key.");
+    } finally {
+      setUpstreamSaving(false);
+    }
+  };
+
   const handleCreateKey = async () => {
     // Validate raw input first, then sanitize
     const validation = validateKeyName(newKeyName, t);
@@ -255,7 +377,22 @@ export default function ApiManagerPageClient() {
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: sanitizedName }),
+        body: JSON.stringify({
+          name: sanitizedName,
+          customerName: sanitizeInput(newCustomerName || sanitizedName),
+          internalNote: newInternalNote.trim() ? sanitizeNote(newInternalNote) : null,
+          tokenLimit: newTokenLimit.trim() ? Math.max(0, Math.floor(Number(newTokenLimit))) : null,
+          dailyTokenLimit: newDailyTokenLimit.trim()
+            ? Math.max(0, Math.floor(Number(newDailyTokenLimit)))
+            : null,
+          hourlyTokenLimit: newHourlyTokenLimit.trim()
+            ? Math.max(0, Math.floor(Number(newHourlyTokenLimit)))
+            : null,
+          maxRequestsPerDay: newRequestLimitDaily.trim()
+            ? Math.max(0, Math.floor(Number(newRequestLimitDaily)))
+            : null,
+          expiresAt: newExpiresAt || null,
+        }),
       });
       const data = await res.json();
 
@@ -263,6 +400,13 @@ export default function ApiManagerPageClient() {
         setCreatedKey(data.key);
         await fetchData();
         setNewKeyName("");
+        setNewCustomerName("");
+        setNewInternalNote("");
+        setNewTokenLimit("");
+        setNewDailyTokenLimit("");
+        setNewHourlyTokenLimit("");
+        setNewRequestLimitDaily("");
+        setNewExpiresAt("");
         setShowAddModal(false);
       } else {
         setCreateError(data.error || t("failedCreateKey"));
@@ -326,6 +470,31 @@ export default function ApiManagerPageClient() {
     }
   };
 
+  const patchKeySettings = async (key: ApiKey, payload: Record<string, unknown>) => {
+    const res = await fetch(`/api/keys/${encodeURIComponent(key.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || t("failedUpdatePermissions"));
+    }
+  };
+  const handleToggleKey = async (key: ApiKey) => {
+    setIsSubmitting(true);
+    clearPageError();
+    try {
+      await patchKeySettings(key, { isActive: key.isActive === false });
+      await fetchData();
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : t("failedUpdatePermissions"));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleOpenPermissions = (key: ApiKey) => {
     if (!key || !key.id) return;
     setEditingKey(key);
@@ -360,6 +529,12 @@ export default function ApiManagerPageClient() {
     isActive: boolean,
     isBanned: boolean,
     expiresAt: string | null,
+    customerName: string | null,
+    internalNote: string | null,
+    tokenLimit: number | null,
+    dailyTokenLimit: number | null,
+    hourlyTokenLimit: number | null,
+    maxRequestsPerDay: number | null,
     maxSessions: number,
     accessSchedule: AccessSchedule | null,
     rateLimits: Array<{ limit: number; window: number }> | null,
@@ -409,6 +584,12 @@ export default function ApiManagerPageClient() {
           isActive,
           isBanned,
           expiresAt,
+          customerName,
+          internalNote,
+          tokenLimit,
+          dailyTokenLimit,
+          hourlyTokenLimit,
+          maxRequestsPerDay,
           maxSessions: normalizedMaxSessions,
           accessSchedule,
           rateLimits,
@@ -466,6 +647,55 @@ export default function ApiManagerPageClient() {
       .filter(([, models]) => models.length > 0);
   }, [modelsByProvider, debouncedSearchModel]);
 
+  const filteredKeys = useMemo(() => {
+    const search = keySearch.trim().toLowerCase();
+    return keys.filter((key) => {
+      const expired = Boolean(key.expiresAt && new Date(key.expiresAt).getTime() < Date.now());
+      const limited = Boolean(
+        key.tokenLimit || key.dailyTokenLimit || key.hourlyTokenLimit || key.maxRequestsPerDay
+      );
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "active" && key.isActive !== false && !key.isBanned && !expired) ||
+        (statusFilter === "limited" && limited) ||
+        (statusFilter === "disabled" && key.isActive === false) ||
+        (statusFilter === "banned" && key.isBanned === true) ||
+        (statusFilter === "expired" && expired);
+      const haystack = [key.name, key.customerName, key.internalNote, key.key]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return matchesStatus && (!search || haystack.includes(search));
+    });
+  }, [keys, keySearch, statusFilter]);
+
+  const managerSummary = useMemo(() => {
+    const now = Date.now();
+    return keys.reduce(
+      (summary, key) => {
+        const expired = Boolean(key.expiresAt && new Date(key.expiresAt).getTime() < now);
+        const usage = usageStats[key.id];
+        const hasQuota = Boolean(
+          key.tokenLimit || key.dailyTokenLimit || key.hourlyTokenLimit || key.maxRequestsPerDay
+        );
+        summary.activeKeys += key.isActive === false || key.isBanned || expired ? 0 : 1;
+        summary.limitedKeys += hasQuota ? 1 : 0;
+        summary.todayRequests += usage?.todayRequests || 0;
+        summary.todayTokens += usage?.todayTokens || 0;
+        summary.reservedTokens +=
+          key.quota?.day?.reservedTokens ?? key.quota?.hour?.reservedTokens ?? 0;
+        return summary;
+      },
+      {
+        activeKeys: 0,
+        limitedKeys: 0,
+        todayRequests: 0,
+        todayTokens: 0,
+        reservedTokens: 0,
+      }
+    );
+  }, [keys, usageStats]);
+
   if (loading) {
     return (
       <div className="flex flex-col gap-8">
@@ -493,7 +723,7 @@ export default function ApiManagerPageClient() {
 
       {/* Stats Summary Cards */}
       {keys.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
           <Card className="p-4">
             <div className="flex items-center gap-3">
               <div className="flex items-center justify-center size-9 rounded-lg bg-primary/10">
@@ -511,13 +741,21 @@ export default function ApiManagerPageClient() {
                 <span className="material-symbols-outlined text-amber-500 text-lg">lock</span>
               </div>
               <div>
-                <p className="text-2xl font-bold">
-                  {
-                    keys.filter((k) => Array.isArray(k.allowedModels) && k.allowedModels.length > 0)
-                      .length
-                  }
-                </p>
-                <p className="text-xs text-text-muted">{t("restricted")}</p>
+                <p className="text-2xl font-bold">{managerSummary.activeKeys.toLocaleString()}</p>
+                <p className="text-xs text-text-muted">Active shares</p>
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center size-9 rounded-lg bg-emerald-500/10">
+                <span className="material-symbols-outlined text-emerald-500 text-lg">
+                  rule_settings
+                </span>
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{managerSummary.limitedKeys.toLocaleString()}</p>
+                <p className="text-xs text-text-muted">Quota plans</p>
               </div>
             </div>
           </Card>
@@ -528,22 +766,35 @@ export default function ApiManagerPageClient() {
               </div>
               <div>
                 <p className="text-2xl font-bold">
-                  {Object.values(usageStats).reduce((sum, s) => sum + s.totalRequests, 0)}
+                  {managerSummary.todayRequests.toLocaleString()}
                 </p>
-                <p className="text-xs text-text-muted">{t("totalRequests")}</p>
+                <p className="text-xs text-text-muted">Requests today</p>
               </div>
             </div>
           </Card>
           <Card className="p-4">
             <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center size-9 rounded-lg bg-emerald-500/10">
-                <span className="material-symbols-outlined text-emerald-500 text-lg">
-                  model_training
+              <div className="flex items-center justify-center size-9 rounded-lg bg-cyan-500/10">
+                <span className="material-symbols-outlined text-cyan-500 text-lg">token</span>
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{managerSummary.todayTokens.toLocaleString()}</p>
+                <p className="text-xs text-text-muted">Tokens today</p>
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center size-9 rounded-lg bg-rose-500/10">
+                <span className="material-symbols-outlined text-rose-500 text-lg">
+                  pending_actions
                 </span>
               </div>
               <div>
-                <p className="text-2xl font-bold">{allModels.length}</p>
-                <p className="text-xs text-text-muted">{t("modelsAvailable")}</p>
+                <p className="text-2xl font-bold">
+                  {managerSummary.reservedTokens.toLocaleString()}
+                </p>
+                <p className="text-xs text-text-muted">Reserved now</p>
               </div>
             </div>
           </Card>
@@ -552,7 +803,7 @@ export default function ApiManagerPageClient() {
 
       {/* Keys List Card */}
       <Card>
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-4">
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center size-10 rounded-lg bg-amber-500/10 shrink-0">
               <span className="material-symbols-outlined text-xl text-amber-500">vpn_key</span>
@@ -567,20 +818,66 @@ export default function ApiManagerPageClient() {
               </p>
             </div>
           </div>
-          <Button
-            icon="add"
-            onClick={() => {
-              setNameError(null);
-              setCreateError(null);
-              clearPageError();
-              setShowAddModal(true);
-            }}
-          >
-            {t("createKey")}
-          </Button>
+          <div className="flex flex-wrap items-center gap-3 sm:justify-end">
+            {qrouterUpstream && (
+              <Toggle
+                checked={qrouterUpstream.isActive === false}
+                onChange={handleToggleQrouterUpstream}
+                label="System Routing"
+                size="sm"
+              />
+            )}
+            <Button
+              icon="add"
+              onClick={() => {
+                setNameError(null);
+                setCreateError(null);
+                clearPageError();
+                setShowAddModal(true);
+              }}
+            >
+              {t("createKey")}
+            </Button>
+          </div>
         </div>
 
         <p className="text-sm text-text-muted mb-4">{t("keysSecurityNote")}</p>
+
+        <div className="mb-4 flex flex-col gap-3 rounded-lg border border-border bg-surface/30 p-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="relative w-full lg:max-w-sm">
+            <Input
+              value={keySearch}
+              onChange={(event) => setKeySearch(event.target.value)}
+              placeholder="Search name, customer, note or key"
+              icon="search"
+            />
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {(
+              [
+                ["all", "All"],
+                ["active", "Active"],
+                ["limited", "Limited"],
+                ["disabled", "Paused"],
+                ["banned", "Banned"],
+                ["expired", "Expired"],
+              ] as Array<[KeyStatusFilter, string]>
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setStatusFilter(value)}
+                className={`rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  statusFilter === value
+                    ? "border-primary bg-primary/15 text-primary"
+                    : "border-border text-text-muted hover:border-primary/40 hover:text-text-main"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
 
         {keys.length === 0 ? (
           <div className="text-center py-12 border border-dashed border-border rounded-lg">
@@ -603,17 +900,17 @@ export default function ApiManagerPageClient() {
         ) : (
           <div className="flex flex-col border border-border rounded-lg overflow-hidden">
             {/* Table Header */}
-            <div className="grid grid-cols-12 gap-4 px-4 py-3 bg-surface/50 border-b border-border text-xs font-semibold text-text-muted uppercase tracking-wider">
+            <div className="hidden lg:grid grid-cols-12 gap-4 px-4 py-3 bg-surface/50 border-b border-border text-xs font-semibold text-text-muted uppercase tracking-wider">
               <div className="col-span-2">{t("name")}</div>
-              <div className="col-span-3">{t("key")}</div>
+              <div className="col-span-2">{t("key")}</div>
               <div className="col-span-2">{t("permissions")}</div>
-              <div className="col-span-2">{t("usage")}</div>
+              <div className="col-span-3">{t("usage")}</div>
               <div className="col-span-1">{t("created")}</div>
               <div className="col-span-2 text-right">{t("actions")}</div>
             </div>
 
             {/* Table Rows */}
-            {keys.map((key) => {
+            {filteredKeys.map((key) => {
               const stats = usageStats[key.id];
               const isRestricted = Array.isArray(key.allowedModels) && key.allowedModels.length > 0;
               const hasConnectionRestrictions =
@@ -625,22 +922,65 @@ export default function ApiManagerPageClient() {
               const hasSessionLimit = maxSessions > 0;
               const activeSessions = sessionCounts[key.id] || 0;
               const hasSchedule = key.accessSchedule?.enabled === true;
+              const tokenUsed = typeof key.tokenUsed === "number" ? key.tokenUsed : 0;
+              const displayTokenUsed = Math.max(tokenUsed, stats?.totalTokens || 0);
+              const tokenLimit = typeof key.tokenLimit === "number" ? key.tokenLimit : null;
+              const totalRequests = stats?.totalRequests ?? 0;
+              const requestLimitDaily =
+                typeof key.maxRequestsPerDay === "number" && key.maxRequestsPerDay > 0
+                  ? key.maxRequestsPerDay
+                  : null;
+              const todayRequests = key.quota?.day?.requestCount ?? stats?.todayRequests ?? 0;
+              const requestActivityPct = totalRequests
+                ? Math.min(100, Math.max(5, (totalRequests / maxApiKeyRequests) * 100))
+                : 0;
+              const dayTokenLimit =
+                typeof key.dailyTokenLimit === "number"
+                  ? key.dailyTokenLimit
+                  : (key.quota?.day?.tokenLimit ?? null);
+              const dayTokenUsed =
+                (key.quota?.day?.usedTokens ?? stats?.todayTokens ?? 0) +
+                (key.quota?.day?.reservedTokens ?? 0);
+              const hourTokenLimit =
+                typeof key.hourlyTokenLimit === "number"
+                  ? key.hourlyTokenLimit
+                  : (key.quota?.hour?.tokenLimit ?? null);
+              const hourTokenUsed =
+                (key.quota?.hour?.usedTokens ?? stats?.hourTokens ?? 0) +
+                (key.quota?.hour?.reservedTokens ?? 0);
               return (
                 <div
                   key={key.id}
-                  className="grid grid-cols-12 gap-4 px-4 py-3 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0 hover:bg-surface/30 transition-colors group"
+                  className="grid grid-cols-1 gap-3 px-4 py-4 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0 hover:bg-surface/30 transition-colors group lg:grid-cols-12 lg:gap-4 lg:py-3"
                 >
-                  <div className="col-span-2 flex items-center gap-2">
+                  <div className="flex items-center gap-2 lg:col-span-2">
                     <span
                       className={`material-symbols-outlined text-sm ${isRestricted ? "text-amber-500" : "text-emerald-500"}`}
                     >
                       {isRestricted ? "lock" : "lock_open"}
                     </span>
-                    <span className="text-sm font-medium truncate" title={key.name}>
-                      {key.name}
-                    </span>
+                    <div className="min-w-0">
+                      <span className="block text-sm font-medium truncate" title={key.name}>
+                        {key.name}
+                      </span>
+                      <span
+                        className="block text-[11px] text-text-muted truncate"
+                        title={key.internalNote || key.customerName || ""}
+                      >
+                        {key.customerName || "No customer name"}
+                      </span>
+                      <span
+                        className={`mt-1 inline-flex rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                          key.commercialKey
+                            ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-600 dark:text-cyan-300"
+                            : "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300"
+                        }`}
+                      >
+                        {key.commercialKey ? "Shared key" : "System key"}
+                      </span>
+                    </div>
                   </div>
-                  <div className="col-span-3 flex items-center gap-1.5">
+                  <div className="flex min-w-0 items-center gap-1.5 lg:col-span-2">
                     <code className="text-sm text-text-muted font-mono truncate">{key.key}</code>
                     {allowKeyReveal ? (
                       <button
@@ -655,14 +995,14 @@ export default function ApiManagerPageClient() {
                       </button>
                     ) : (
                       <span
-                        className="p-1 text-text-muted/40 opacity-0 group-hover:opacity-100 transition-all shrink-0 cursor-help"
+                        className="p-1 text-text-muted/40 opacity-100 transition-all shrink-0 cursor-help lg:opacity-0 lg:group-hover:opacity-100"
                         title={t("keyOnlyAvailableAtCreation")}
                       >
                         <span className="material-symbols-outlined text-[14px]">lock</span>
                       </span>
                     )}
                   </div>
-                  <div className="col-span-2 flex items-center">
+                  <div className="flex items-center lg:col-span-2">
                     <div className="flex flex-col items-start gap-1">
                       {isRestricted ? (
                         <button
@@ -746,40 +1086,162 @@ export default function ApiManagerPageClient() {
                       )}
                     </div>
                   </div>
-                  <div className="col-span-2 flex flex-col justify-center">
-                    <span className="text-sm font-medium tabular-nums">
-                      {stats?.totalRequests ?? 0}{" "}
-                      <span className="text-text-muted font-normal text-xs">{t("reqs")}</span>
-                    </span>
-                    {stats?.lastUsed ? (
-                      <span className="text-[10px] text-text-muted">
-                        {t("lastUsedOn", { date: new Date(stats.lastUsed).toLocaleDateString() })}
+                  <div className="flex flex-col justify-center gap-0.5 rounded-md border border-border/70 bg-surface/30 p-2 lg:col-span-3 lg:border-0 lg:bg-transparent lg:p-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium tabular-nums">
+                        {stats?.totalRequests ?? 0}{" "}
+                        <span className="text-text-muted font-normal text-xs">{t("reqs")}</span>
                       </span>
+                      {stats?.lastUsed ? (
+                        <span className="text-[10px] text-text-muted">
+                          {t("lastUsedOn", { date: new Date(stats.lastUsed).toLocaleDateString() })}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-text-muted italic">{t("neverUsed")}</span>
+                      )}
+                    </div>
+                    {requestLimitDaily && (
+                      <div className="flex flex-col gap-1 w-full mt-0.5">
+                        <div className="flex items-center justify-between text-[10px] text-text-muted tabular-nums">
+                          <span>
+                            {todayRequests.toLocaleString()} / {requestLimitDaily.toLocaleString()}{" "}
+                            req today
+                          </span>
+                          <span>
+                            {Math.max(0, requestLimitDaily - todayRequests).toLocaleString()} left
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 transition-all duration-300"
+                            style={{
+                              width: `${Math.min(100, Math.max(0, (todayRequests / requestLimitDaily) * 100))}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {dayTokenLimit && (
+                      <div className="flex flex-col gap-1 w-full mt-0.5">
+                        <div className="flex items-center justify-between text-[10px] text-text-muted tabular-nums">
+                          <span>
+                            Day tokens {dayTokenUsed.toLocaleString()} /{" "}
+                            {dayTokenLimit.toLocaleString()}
+                          </span>
+                          <span>
+                            {Math.max(0, dayTokenLimit - dayTokenUsed).toLocaleString()} left
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-300"
+                            style={{
+                              width: `${Math.min(100, (dayTokenUsed / dayTokenLimit) * 100)}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {hourTokenLimit && (
+                      <div className="flex items-center justify-between gap-2 text-[10px] text-text-muted tabular-nums">
+                        <span>Hour tokens {hourTokenUsed.toLocaleString()}</span>
+                        <span>Limit {hourTokenLimit.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {tokenLimit ? (
+                      (() => {
+                        const pct = Math.min(
+                          100,
+                          Math.max(0, (displayTokenUsed / tokenLimit) * 100)
+                        );
+                        const remaining = Math.max(0, tokenLimit - displayTokenUsed);
+                        return (
+                          <div className="flex flex-col gap-1 w-full mt-0.5">
+                            <div className="flex items-center justify-between text-[10px] text-text-muted tabular-nums">
+                              <span>
+                                {displayTokenUsed.toLocaleString()} / {tokenLimit.toLocaleString()}{" "}
+                                tokens
+                              </span>
+                              <span>{remaining.toLocaleString()} remaining</span>
+                            </div>
+                            <div className="w-full h-1.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full transition-all duration-300 ${
+                                  pct < 70
+                                    ? "bg-gradient-to-r from-emerald-500 to-teal-500"
+                                    : pct < 100
+                                      ? "bg-gradient-to-r from-amber-500 to-orange-500"
+                                      : "bg-gradient-to-r from-red-500 to-rose-500"
+                                }`}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                            <span className="text-[9px] text-text-muted/60 italic leading-none">
+                              * (In + Out combined)
+                            </span>
+                          </div>
+                        );
+                      })()
                     ) : (
-                      <span className="text-[10px] text-text-muted italic">{t("neverUsed")}</span>
+                      <div className="flex flex-col gap-1 w-full mt-0.5">
+                        <div className="flex items-center justify-between gap-2 text-[10px] text-text-muted tabular-nums">
+                          <span>{displayTokenUsed.toLocaleString()} tokens used</span>
+                          <span>{totalRequests.toLocaleString()} req total</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 transition-all duration-300"
+                            style={{ width: `${requestActivityPct}%` }}
+                          />
+                        </div>
+                        <span className="text-[9px] text-text-muted/60 italic leading-none">
+                          {stats?.estimatedFromWorkspace
+                            ? "Unlimited quota, showing workspace historical activity"
+                            : "Unlimited quota, showing measured request activity"}
+                        </span>
+                      </div>
                     )}
                   </div>
-                  <div className="col-span-1 flex items-center text-sm text-text-muted">
-                    {new Date(key.createdAt).toLocaleDateString()}
+                  <div className="flex flex-col justify-center text-sm text-text-muted lg:col-span-1">
+                    <span>{new Date(key.createdAt).toLocaleDateString()}</span>
                   </div>
-                  <div className="col-span-2 flex items-center justify-end gap-1">
+                  <div className="flex flex-wrap items-center justify-start gap-1 lg:col-span-2 lg:justify-end">
+                    <button
+                      onClick={() => handleCopyExistingKey(key.id)}
+                      className="p-2 hover:bg-primary/10 rounded text-text-muted hover:text-primary opacity-100 transition-all lg:opacity-0 lg:group-hover:opacity-100"
+                      title={tc("copy")}
+                      aria-label={tc("copy")}
+                    >
+                      <span className="material-symbols-outlined text-[18px]">
+                        {copied === `existing_key_${key.id}` ? "check" : "content_copy"}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => handleToggleKey(key)}
+                      className={`p-2 rounded opacity-100 transition-all lg:opacity-0 lg:group-hover:opacity-100 ${keyIsActive ? "text-text-muted hover:text-red-500 hover:bg-red-500/10" : "text-emerald-600 hover:bg-emerald-500/10"}`}
+                      title={keyIsActive ? "Disable key" : "Enable key"}
+                    >
+                      <span className="material-symbols-outlined text-[18px]">
+                        {keyIsActive ? "pause_circle" : "play_circle"}
+                      </span>
+                    </button>
                     <button
                       onClick={() => handleRegenerateKey(key.id)}
-                      className="p-2 hover:bg-amber-500/10 rounded text-text-muted hover:text-amber-500 opacity-0 group-hover:opacity-100 transition-all"
+                      className="p-2 hover:bg-amber-500/10 rounded text-text-muted hover:text-amber-500 opacity-100 transition-all lg:opacity-0 lg:group-hover:opacity-100"
                       title={t("regenerateKey")}
                     >
                       <span className="material-symbols-outlined text-[18px]">refresh</span>
                     </button>
                     <button
                       onClick={() => handleOpenPermissions(key)}
-                      className="p-2 hover:bg-primary/10 rounded text-text-muted hover:text-primary opacity-0 group-hover:opacity-100 transition-all"
+                      className="p-2 hover:bg-primary/10 rounded text-text-muted hover:text-primary opacity-100 transition-all lg:opacity-0 lg:group-hover:opacity-100"
                       title={t("editPermissions")}
                     >
                       <span className="material-symbols-outlined text-[18px]">tune</span>
                     </button>
                     <button
                       onClick={() => handleDeleteKey(key.id)}
-                      className="p-2 hover:bg-red-500/10 rounded text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                      className="p-2 hover:bg-red-500/10 rounded text-red-500 opacity-100 transition-all lg:opacity-0 lg:group-hover:opacity-100"
                       title={t("deleteKey")}
                     >
                       <span className="material-symbols-outlined text-[18px]">delete</span>
@@ -791,37 +1253,6 @@ export default function ApiManagerPageClient() {
           </div>
         )}
       </Card>
-
-      {/* Usage Tips Card */}
-      <Card>
-        <div className="flex items-start gap-3">
-          <div className="flex items-center justify-center size-10 rounded-lg bg-blue-500/10 shrink-0">
-            <span className="material-symbols-outlined text-xl text-blue-500">lightbulb</span>
-          </div>
-          <div>
-            <h3 className="font-semibold mb-2">{t("usageTips")}</h3>
-            <ul className="text-sm text-text-muted space-y-1.5">
-              <li className="flex items-start gap-2">
-                <span className="material-symbols-outlined text-xs text-primary mt-1">check</span>
-                <span>{t("tipAuth")}</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="material-symbols-outlined text-xs text-primary mt-1">check</span>
-                <span>{t("tipSecure")}</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="material-symbols-outlined text-xs text-primary mt-1">check</span>
-                <span>{t("tipSeparate")}</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="material-symbols-outlined text-xs text-primary mt-1">check</span>
-                <span>{t("tipRestrict")}</span>
-              </li>
-            </ul>
-          </div>
-        </div>
-      </Card>
-
       {/* Add Key Modal */}
       <Modal
         isOpen={showAddModal}
@@ -829,6 +1260,13 @@ export default function ApiManagerPageClient() {
         onClose={() => {
           setShowAddModal(false);
           setNewKeyName("");
+          setNewCustomerName("");
+          setNewInternalNote("");
+          setNewTokenLimit("");
+          setNewDailyTokenLimit("");
+          setNewHourlyTokenLimit("");
+          setNewRequestLimitDaily("");
+          setNewExpiresAt("");
           setNameError(null);
           setCreateError(null);
         }}
@@ -851,6 +1289,81 @@ export default function ApiManagerPageClient() {
             />
             <p className="text-xs text-text-muted mt-1.5">{t("keyNameDesc")}</p>
           </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <div>
+              <label className="text-sm font-medium text-text-main mb-1.5 block">
+                Customer name
+              </label>
+              <Input
+                value={newCustomerName}
+                onChange={(e) => setNewCustomerName(e.target.value)}
+                placeholder="Customer or company"
+                maxLength={MAX_KEY_NAME_LENGTH}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-text-main mb-1.5 block">
+                Lifetime tokens
+              </label>
+              <Input
+                value={newTokenLimit}
+                onChange={(e) => setNewTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
+                placeholder="Unlimited"
+                inputMode="numeric"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/day</label>
+              <Input
+                value={newDailyTokenLimit}
+                onChange={(e) => setNewDailyTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
+                placeholder="Unlimited"
+                inputMode="numeric"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/hour</label>
+              <Input
+                value={newHourlyTokenLimit}
+                onChange={(e) => setNewHourlyTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
+                placeholder="Unlimited"
+                inputMode="numeric"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-text-main mb-1.5 block">
+                Requests/day
+              </label>
+              <Input
+                value={newRequestLimitDaily}
+                onChange={(e) => setNewRequestLimitDaily(e.target.value.replace(/[^0-9]/g, ""))}
+                placeholder="Unlimited"
+                inputMode="numeric"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">Internal note</label>
+            <textarea
+              value={newInternalNote}
+              onChange={(e) => setNewInternalNote(e.target.value)}
+              placeholder="Only visible to operators"
+              rows={2}
+              className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background text-text-main"
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium text-text-main">Expiry</label>
+            <input
+              type="datetime-local"
+              value={newExpiresAt ? newExpiresAt.slice(0, 16) : ""}
+              onChange={(e) => {
+                const value = e.target.value;
+                setNewExpiresAt(value ? new Date(value).toISOString() : "");
+              }}
+              className="w-full px-2 py-1.5 text-sm border border-border rounded-md bg-background text-text-main"
+            />
+          </div>
           {createError && (
             <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30">
               <span className="material-symbols-outlined text-red-500 text-sm">error</span>
@@ -862,6 +1375,13 @@ export default function ApiManagerPageClient() {
               onClick={() => {
                 setShowAddModal(false);
                 setNewKeyName("");
+                setNewCustomerName("");
+                setNewInternalNote("");
+                setNewTokenLimit("");
+                setNewDailyTokenLimit("");
+                setNewHourlyTokenLimit("");
+                setNewRequestLimitDaily("");
+                setNewExpiresAt("");
                 setNameError(null);
                 setCreateError(null);
               }}
@@ -966,6 +1486,12 @@ const PermissionsModal = memo(function PermissionsModal({
     isActive: boolean,
     isBanned: boolean,
     expiresAt: string | null,
+    customerName: string | null,
+    internalNote: string | null,
+    tokenLimit: number | null,
+    dailyTokenLimit: number | null,
+    hourlyTokenLimit: number | null,
+    maxRequestsPerDay: number | null,
     maxSessions: number,
     accessSchedule: AccessSchedule | null,
     rateLimits: Array<{ limit: number; window: number }> | null,
@@ -988,6 +1514,26 @@ const PermissionsModal = memo(function PermissionsModal({
   const [keyIsActive, setKeyIsActive] = useState(apiKey?.isActive !== false);
   const [keyIsBanned, setKeyIsBanned] = useState(apiKey?.isBanned === true);
   const [expiresAt, setExpiresAt] = useState(apiKey?.expiresAt ?? "");
+  const [customerName, setCustomerName] = useState(apiKey?.customerName ?? "");
+  const [internalNote, setInternalNote] = useState(apiKey?.internalNote ?? "");
+  const [tokenLimit, setTokenLimit] = useState(
+    typeof apiKey?.tokenLimit === "number" && apiKey.tokenLimit > 0 ? String(apiKey.tokenLimit) : ""
+  );
+  const [dailyTokenLimit, setDailyTokenLimit] = useState(
+    typeof apiKey?.dailyTokenLimit === "number" && apiKey.dailyTokenLimit > 0
+      ? String(apiKey.dailyTokenLimit)
+      : ""
+  );
+  const [hourlyTokenLimit, setHourlyTokenLimit] = useState(
+    typeof apiKey?.hourlyTokenLimit === "number" && apiKey.hourlyTokenLimit > 0
+      ? String(apiKey.hourlyTokenLimit)
+      : ""
+  );
+  const [requestLimitDaily, setRequestLimitDaily] = useState(
+    typeof apiKey?.maxRequestsPerDay === "number" && apiKey.maxRequestsPerDay > 0
+      ? String(apiKey.maxRequestsPerDay)
+      : ""
+  );
   const [manageEnabled, setManageEnabled] = useState(
     Array.isArray(apiKey?.scopes) && apiKey.scopes.includes("manage")
   );
@@ -1136,6 +1682,12 @@ const PermissionsModal = memo(function PermissionsModal({
       keyIsActive,
       keyIsBanned,
       expiresAt || null,
+      customerName.trim() ? sanitizeInput(customerName) : null,
+      internalNote.trim() ? sanitizeNote(internalNote) : null,
+      tokenLimit.trim() ? Math.max(0, Math.floor(Number(tokenLimit))) : null,
+      dailyTokenLimit.trim() ? Math.max(0, Math.floor(Number(dailyTokenLimit))) : null,
+      hourlyTokenLimit.trim() ? Math.max(0, Math.floor(Number(hourlyTokenLimit))) : null,
+      requestLimitDaily.trim() ? Math.max(0, Math.floor(Number(requestLimitDaily))) : null,
       maxSessions,
       schedule,
       rateLimits.length > 0 ? rateLimits : null,
@@ -1153,6 +1705,12 @@ const PermissionsModal = memo(function PermissionsModal({
     keyIsActive,
     keyIsBanned,
     expiresAt,
+    customerName,
+    internalNote,
+    tokenLimit,
+    dailyTokenLimit,
+    hourlyTokenLimit,
+    requestLimitDaily,
     maxSessions,
     manageEnabled,
     scheduleEnabled,
@@ -1539,38 +2097,94 @@ const PermissionsModal = memo(function PermissionsModal({
             {keyIsBanned ? "Banned" : "Active"}
           </button>
         </div>
-        {/* Management API Access Toggle */}
-        <div className="flex items-start justify-between gap-3 p-3 rounded-lg border border-border bg-surface/40">
-          <div className="flex flex-col gap-1">
-            <p className="text-sm font-medium text-text-main">{t("managementApiAccess")}</p>
-            <p className="text-xs text-text-muted">
-              Allow this key to call management routes (providers, combos, settings) via{" "}
-              <code className="font-mono">Authorization: Bearer</code>. Use for LLM agents only.
+        {/* Customer details */}
+        <div className="grid gap-3 p-3 rounded-lg border border-border bg-surface/40 sm:grid-cols-2">
+          <div>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">Customer name</label>
+            <Input
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+              placeholder="Customer or company"
+              maxLength={MAX_KEY_NAME_LENGTH}
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">
+              Lifetime tokens
+            </label>
+            <Input
+              value={tokenLimit}
+              onChange={(e) => setTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
+              placeholder="Unlimited"
+              inputMode="numeric"
+            />
+            <p className="text-xs text-text-muted mt-1">
+              Used: {(apiKey.tokenUsed ?? 0).toLocaleString()} tokens
             </p>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={keyIsBanned}
-            onClick={() => setKeyIsBanned((prev) => !prev)}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-bold transition-colors ${
-              keyIsBanned
-                ? "bg-red-600 text-white shadow-lg shadow-red-500/20"
-                : "bg-black/5 dark:bg-white/5 text-text-muted border border-border"
-            }`}
-          >
-            <span className="material-symbols-outlined text-[14px]">gavel</span>
-            {keyIsBanned ? "BANNED" : "UNBANNED"}
-          </button>
+          <div>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/day</label>
+            <Input
+              value={dailyTokenLimit}
+              onChange={(e) => setDailyTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
+              placeholder="Unlimited"
+              inputMode="numeric"
+            />
+            <p className="text-xs text-text-muted mt-1">Reserved before upstream call.</p>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/hour</label>
+            <Input
+              value={hourlyTokenLimit}
+              onChange={(e) => setHourlyTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
+              placeholder="Unlimited"
+              inputMode="numeric"
+            />
+            <p className="text-xs text-text-muted mt-1">Optional burst guard.</p>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">Requests/day</label>
+            <Input
+              value={requestLimitDaily}
+              onChange={(e) => setRequestLimitDaily(e.target.value.replace(/[^0-9]/g, ""))}
+              placeholder="Unlimited"
+              inputMode="numeric"
+            />
+            <p className="text-xs text-text-muted mt-1">Enforced as a daily request window.</p>
+          </div>
+          <div className="sm:col-span-2">
+            <label className="text-sm font-medium text-text-main mb-1.5 block">Internal note</label>
+            <textarea
+              value={internalNote}
+              onChange={(e) => setInternalNote(e.target.value)}
+              placeholder="Operator note"
+              rows={2}
+              className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background text-text-main"
+            />
+          </div>
         </div>
 
         {/* Expiration Date */}
         <div className="flex flex-col gap-2 p-3 rounded-lg border border-border bg-surface/40">
-          <div className="flex flex-col gap-1">
-            <p className="text-sm font-medium text-text-main">{t("expirationDate")}</p>
-            <p className="text-xs text-text-muted">
-              Key will automatically stop working after this date.
-            </p>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <p className="text-sm font-medium text-text-main">{t("expirationDate")}</p>
+              <p className="text-xs text-text-muted">
+                Key will automatically stop working after this date.
+              </p>
+            </div>
+            <div className="flex items-center gap-1">
+              {[1, 3, 7].map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  onClick={() => setExpiresAt(extendExpiryByDays(expiresAt, days))}
+                  className="px-2 py-1 text-xs rounded-md border border-border text-text-muted hover:text-primary hover:border-primary/40"
+                >
+                  +{days}d
+                </button>
+              ))}
+            </div>
           </div>
           <input
             type="datetime-local"

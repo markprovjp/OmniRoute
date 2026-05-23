@@ -53,6 +53,7 @@ test("GET /api/keys stays masked even when reveal is enabled", async () => {
 });
 
 test("GET /api/keys falls back to default pagination for invalid query params", async () => {
+  process.env.ALLOW_API_KEY_REVEAL = "false";
   await apiKeysDb.createApiKey("Alpha", MACHINE_ID);
   await apiKeysDb.createApiKey("Beta", MACHINE_ID);
 
@@ -98,6 +99,7 @@ test("GET /api/keys returns 500 when key loading fails unexpectedly", async () =
 });
 
 test("GET /api/keys/[id]/reveal rejects requests when reveal is disabled", async () => {
+  process.env.ALLOW_API_KEY_REVEAL = "false";
   const created = await apiKeysDb.createApiKey("Primary Key", MACHINE_ID);
   const request = new Request(`http://localhost/api/keys/${created.id}/reveal`);
 

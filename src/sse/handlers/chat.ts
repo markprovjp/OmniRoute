@@ -55,6 +55,11 @@ import { RequestTelemetry, recordTelemetry } from "../../shared/utils/requestTel
 import { generateRequestId } from "../../shared/utils/requestId";
 import { logAuditEvent } from "../../lib/compliance/index";
 import { enforceApiKeyPolicy } from "../../shared/utils/apiKeyPolicy";
+import {
+  estimateApiKeyReservationTokens,
+  releaseApiKeyUsageReservation,
+  reserveApiKeyUsageDistributed,
+} from "../../lib/usage/apiKeyQuotaLedger";
 import { cloneLogPayload } from "@/lib/logPayloads";
 import {
   applyTaskAwareRouting,
@@ -351,6 +356,37 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
   }
   // ────────────────────────────────────────────────────────────────────────────
 
+  const quotaReservation = apiKeyInfo?.id
+    ? await reserveApiKeyUsageDistributed({
+        apiKeyId: apiKeyInfo.id,
+        requestId: reqId,
+        model: resolvedModelStr,
+        estimatedTokens: estimateApiKeyReservationTokens(body),
+      })
+    : null;
+  if (quotaReservation && !quotaReservation.allowed) {
+    const quotaMessage =
+      quotaReservation.reason === "daily_request_limit"
+        ? "API key daily request quota exceeded"
+        : quotaReservation.reason === "hourly_token_limit"
+          ? "API key hourly token quota exceeded"
+          : quotaReservation.reason === "lifetime_token_limit"
+            ? "API key token limit exceeded"
+            : "API key daily token quota exceeded";
+    return withSessionHeader(errorResponse(HTTP_STATUS.RATE_LIMITED, quotaMessage), sessionId);
+  }
+  if (quotaReservation?.allowed && quotaReservation.reservationId && apiKeyInfo) {
+    (apiKeyInfo as any).quotaReservationId = quotaReservation.reservationId;
+    (apiKeyInfo as any).quotaRequestId = quotaReservation.requestId;
+  }
+
+  const releaseRejectedQuotaReservation = (response: Response) => {
+    if (!response.ok && quotaReservation?.allowed && quotaReservation.reservationId) {
+      releaseApiKeyUsageReservation(quotaReservation.reservationId, `response_${response.status}`);
+    }
+    return response;
+  };
+
   // Check if model is a combo (has multiple models with fallback)
   telemetry.startPhase("resolve");
   let combo: any = await getComboForModel(resolvedModelStr);
@@ -554,7 +590,7 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
 
     // Record telemetry
     recordTelemetry(telemetry);
-    return withSessionHeader(response, sessionId);
+    return withSessionHeader(releaseRejectedQuotaReservation(response), sessionId);
   }
   telemetry.endPhase();
 
@@ -577,7 +613,7 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
     false
   );
   recordTelemetry(telemetry);
-  return withSessionHeader(response, sessionId);
+  return withSessionHeader(releaseRejectedQuotaReservation(response), sessionId);
 }
 
 export function buildClientRawRequest(request: Request, body: unknown) {

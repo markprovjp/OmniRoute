@@ -437,6 +437,14 @@ export const createKeySchema = z.object({
   name: z.string().min(1, "Name is required").max(200),
   noLog: z.boolean().optional(),
   scopes: z.array(z.string().trim().min(1).max(64)).max(16).optional(),
+  customerName: z.string().trim().max(200).nullable().optional(),
+  internalNote: z.string().trim().max(2000).nullable().optional(),
+  tokenLimit: z.number().int().min(0).nullable().optional(),
+  dailyTokenLimit: z.number().int().min(0).nullable().optional(),
+  hourlyTokenLimit: z.number().int().min(0).nullable().optional(),
+  maxRequestsPerDay: z.number().int().min(0).nullable().optional(),
+  maxRequestsPerMinute: z.number().int().min(0).nullable().optional(),
+  expiresAt: z.string().datetime().nullable().optional(),
 });
 
 export const createSyncTokenSchema = z.object({
@@ -1635,6 +1643,13 @@ export const updateKeyPermissionsSchema = z
     isActive: z.boolean().optional(),
     isBanned: z.boolean().optional(),
     expiresAt: z.string().datetime().nullable().optional(),
+    customerName: z.string().trim().max(200).nullable().optional(),
+    internalNote: z.string().trim().max(2000).nullable().optional(),
+    tokenLimit: z.number().int().min(0).nullable().optional(),
+    dailyTokenLimit: z.number().int().min(0).nullable().optional(),
+    hourlyTokenLimit: z.number().int().min(0).nullable().optional(),
+    maxRequestsPerDay: z.number().int().min(0).nullable().optional(),
+    maxRequestsPerMinute: z.number().int().min(0).nullable().optional(),
     maxSessions: z.number().int().min(0).max(10000).optional(),
     accessSchedule: z.union([accessScheduleSchema, z.null()]).optional(),
     rateLimits: z
@@ -1659,6 +1674,13 @@ export const updateKeyPermissionsSchema = z
       value.isActive === undefined &&
       value.isBanned === undefined &&
       value.expiresAt === undefined &&
+      value.customerName === undefined &&
+      value.internalNote === undefined &&
+      value.tokenLimit === undefined &&
+      value.dailyTokenLimit === undefined &&
+      value.hourlyTokenLimit === undefined &&
+      value.maxRequestsPerDay === undefined &&
+      value.maxRequestsPerMinute === undefined &&
       value.maxSessions === undefined &&
       value.accessSchedule === undefined &&
       value.rateLimits === undefined &&

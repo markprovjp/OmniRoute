@@ -72,6 +72,13 @@ export async function PATCH(request, { params }) {
       isActive,
       isBanned,
       expiresAt,
+      customerName,
+      internalNote,
+      tokenLimit,
+      dailyTokenLimit,
+      hourlyTokenLimit,
+      maxRequestsPerDay,
+      maxRequestsPerMinute,
       maxSessions,
       accessSchedule,
       rateLimits,
@@ -87,6 +94,13 @@ export async function PATCH(request, { params }) {
     if (isActive !== undefined) payload.isActive = isActive;
     if (isBanned !== undefined) payload.isBanned = isBanned;
     if (expiresAt !== undefined) payload.expiresAt = expiresAt;
+    if (customerName !== undefined) payload.customerName = customerName;
+    if (internalNote !== undefined) payload.internalNote = internalNote;
+    if (tokenLimit !== undefined) payload.tokenLimit = tokenLimit;
+    if (dailyTokenLimit !== undefined) payload.dailyTokenLimit = dailyTokenLimit;
+    if (hourlyTokenLimit !== undefined) payload.hourlyTokenLimit = hourlyTokenLimit;
+    if (maxRequestsPerDay !== undefined) payload.maxRequestsPerDay = maxRequestsPerDay;
+    if (maxRequestsPerMinute !== undefined) payload.maxRequestsPerMinute = maxRequestsPerMinute;
     if (maxSessions !== undefined) payload.maxSessions = maxSessions;
     if (accessSchedule !== undefined) payload.accessSchedule = accessSchedule;
     if (rateLimits !== undefined) payload.rateLimits = rateLimits;
@@ -110,6 +124,13 @@ export async function PATCH(request, { params }) {
       ...(isActive !== undefined && { isActive }),
       ...(isBanned !== undefined && { isBanned }),
       ...(expiresAt !== undefined && { expiresAt }),
+      ...(customerName !== undefined && { customerName }),
+      ...(internalNote !== undefined && { internalNote }),
+      ...(tokenLimit !== undefined && { tokenLimit }),
+      ...(dailyTokenLimit !== undefined && { dailyTokenLimit }),
+      ...(hourlyTokenLimit !== undefined && { hourlyTokenLimit }),
+      ...(maxRequestsPerDay !== undefined && { maxRequestsPerDay }),
+      ...(maxRequestsPerMinute !== undefined && { maxRequestsPerMinute }),
       ...(maxSessions !== undefined && { maxSessions }),
       ...(accessSchedule !== undefined && { accessSchedule }),
       ...(rateLimits !== undefined && { rateLimits }),

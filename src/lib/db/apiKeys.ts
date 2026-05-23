@@ -34,6 +34,19 @@ export interface AccessSchedule {
   tz: string;
 }
 
+export interface CreateApiKeyOptions {
+  scopes?: string[];
+  customerName?: string | null;
+  internalNote?: string | null;
+  tokenLimit?: number | null;
+  dailyTokenLimit?: number | null;
+  hourlyTokenLimit?: number | null;
+  maxRequestsPerDay?: number | null;
+  maxRequestsPerMinute?: number | null;
+  expiresAt?: string | null;
+  commercialKey?: boolean;
+}
+
 interface ApiKeyMetadata {
   id: string;
   name: string;
@@ -56,6 +69,13 @@ interface ApiKeyMetadata {
   scopes: string[];
   isBanned: boolean;
   keyHash: string | null;
+  customerName: string | null;
+  internalNote: string | null;
+  tokenLimit: number | null;
+  dailyTokenLimit: number | null;
+  hourlyTokenLimit: number | null;
+  tokenUsed: number;
+  commercialKey: boolean;
 }
 
 interface ApiKeyRow extends JsonRecord {
@@ -141,6 +161,13 @@ const API_KEY_COLUMN_FALLBACKS = [
   { name: "rate_limits", definition: "rate_limits TEXT" },
   { name: "is_banned", definition: "is_banned INTEGER NOT NULL DEFAULT 0" },
   { name: "key_hash", definition: "key_hash TEXT" },
+  { name: "customer_name", definition: "customer_name TEXT" },
+  { name: "internal_note", definition: "internal_note TEXT" },
+  { name: "token_limit", definition: "token_limit INTEGER" },
+  { name: "daily_token_limit", definition: "daily_token_limit INTEGER" },
+  { name: "hourly_token_limit", definition: "hourly_token_limit INTEGER" },
+  { name: "token_used", definition: "token_used INTEGER NOT NULL DEFAULT 0" },
+  { name: "commercial_key", definition: "commercial_key INTEGER NOT NULL DEFAULT 0" },
 ] as const;
 
 // Cache for model permission checks
@@ -336,10 +363,10 @@ function getPreparedStatements(db: ApiKeysDbLike): ApiKeysStatements {
       "SELECT id, expires_at, revoked_at, is_active, is_banned FROM api_keys WHERE key = ? OR key_hash = ?"
     );
     _stmtGetKeyMetadata = db.prepare<ApiKeyRow>(
-      "SELECT id, name, machine_id, allowed_models, allowed_connections, no_log, auto_resolve, is_active, access_schedule, max_requests_per_day, max_requests_per_minute, max_sessions, revoked_at, expires_at, ip_allowlist, scopes, rate_limits, is_banned, key_hash FROM api_keys WHERE key = ? OR key_hash = ?"
+      "SELECT id, name, machine_id, allowed_models, allowed_connections, no_log, auto_resolve, is_active, access_schedule, max_requests_per_day, max_requests_per_minute, max_sessions, revoked_at, expires_at, ip_allowlist, scopes, rate_limits, is_banned, key_hash, customer_name, internal_note, token_limit, daily_token_limit, hourly_token_limit, token_used, commercial_key FROM api_keys WHERE key = ? OR key_hash = ?"
     );
     _stmtInsertKey = db.prepare(
-      "INSERT INTO api_keys (id, name, key, machine_id, allowed_models, no_log, created_at, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO api_keys (id, name, key, machine_id, allowed_models, no_log, created_at, key_prefix, key_hash, scopes, customer_name, internal_note, token_limit, daily_token_limit, hourly_token_limit, token_used, commercial_key, max_requests_per_day, max_requests_per_minute, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
     _stmtDeleteKey = db.prepare("DELETE FROM api_keys WHERE id = ?");
   }
@@ -379,6 +406,13 @@ export async function getApiKeys() {
     camelRow.accessSchedule = parseAccessSchedule(camelRow.accessSchedule);
     camelRow.rateLimits = parseRateLimits(camelRow.rateLimits);
     camelRow.isBanned = parseIsBanned(camelRow.isBanned);
+    camelRow.customerName = parseNullableString(camelRow.customerName);
+    camelRow.internalNote = parseNullableString(camelRow.internalNote);
+    camelRow.tokenLimit = parseNullableNonNegativeInt(camelRow.tokenLimit);
+    camelRow.dailyTokenLimit = parseNullableNonNegativeInt(camelRow.dailyTokenLimit);
+    camelRow.hourlyTokenLimit = parseNullableNonNegativeInt(camelRow.hourlyTokenLimit);
+    camelRow.tokenUsed = parseNonNegativeInt(camelRow.tokenUsed);
+    camelRow.commercialKey = parseCommercialKey(camelRow.commercialKey);
     if (typeof camelRow.id === "string" && camelRow.id.length > 0) {
       setNoLog(camelRow.id, camelRow.noLog === true);
     }
@@ -400,6 +434,13 @@ export async function getApiKeyById(id: string) {
   camelRow.accessSchedule = parseAccessSchedule(camelRow.accessSchedule);
   camelRow.rateLimits = parseRateLimits(camelRow.rateLimits);
   camelRow.isBanned = parseIsBanned(camelRow.isBanned);
+  camelRow.customerName = parseNullableString(camelRow.customerName);
+  camelRow.internalNote = parseNullableString(camelRow.internalNote);
+  camelRow.tokenLimit = parseNullableNonNegativeInt(camelRow.tokenLimit);
+  camelRow.dailyTokenLimit = parseNullableNonNegativeInt(camelRow.dailyTokenLimit);
+  camelRow.hourlyTokenLimit = parseNullableNonNegativeInt(camelRow.hourlyTokenLimit);
+  camelRow.tokenUsed = parseNonNegativeInt(camelRow.tokenUsed);
+  camelRow.commercialKey = parseCommercialKey(camelRow.commercialKey);
   if (typeof camelRow.id === "string" && camelRow.id.length > 0) {
     setNoLog(camelRow.id, camelRow.noLog === true);
   }
@@ -523,6 +564,28 @@ function parseIsBanned(value: unknown): boolean {
   return value === 1 || value === "1" || value === true;
 }
 
+function parseNullableString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseNullableNonNegativeInt(value: unknown): number | null {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return Math.floor(numeric);
+}
+
+function parseNonNegativeInt(value: unknown): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return 0;
+  return Math.floor(numeric);
+}
+
+function parseCommercialKey(value: unknown): boolean {
+  return value === 1 || value === "1" || value === true;
+}
+
 async function hashKey(key: string): Promise<string> {
   if (!key || typeof key !== "string") return "";
   // CodeQL: This is intentionally SHA-256, NOT password hashing. API keys are
@@ -533,16 +596,51 @@ async function hashKey(key: string): Promise<string> {
   return createHash("sha256").update(key).digest("hex"); // nosemgrep: insufficient-password-hash
 }
 
-export async function createApiKey(name: string, machineId: string, scopes: string[] = []) {
+function normalizeCreateOptions(
+  scopesOrOptions: string[] | CreateApiKeyOptions | undefined
+): Required<Pick<CreateApiKeyOptions, "commercialKey">> &
+  Omit<CreateApiKeyOptions, "commercialKey"> & { scopes: string[] } {
+  if (Array.isArray(scopesOrOptions)) {
+    return { scopes: scopesOrOptions, commercialKey: false };
+  }
+
+  return {
+    scopes: Array.isArray(scopesOrOptions?.scopes) ? scopesOrOptions.scopes : [],
+    customerName: scopesOrOptions?.customerName ?? null,
+    internalNote: scopesOrOptions?.internalNote ?? null,
+    tokenLimit: scopesOrOptions?.tokenLimit ?? null,
+    dailyTokenLimit: scopesOrOptions?.dailyTokenLimit ?? null,
+    hourlyTokenLimit: scopesOrOptions?.hourlyTokenLimit ?? null,
+    maxRequestsPerDay: scopesOrOptions?.maxRequestsPerDay ?? null,
+    maxRequestsPerMinute: scopesOrOptions?.maxRequestsPerMinute ?? null,
+    expiresAt: scopesOrOptions?.expiresAt ?? null,
+    commercialKey: scopesOrOptions?.commercialKey === true,
+  };
+}
+
+export async function createApiKey(
+  name: string,
+  machineId: string,
+  scopesOrOptions: string[] | CreateApiKeyOptions = []
+) {
   if (!machineId) {
     throw new Error("machineId is required");
   }
 
+  const options = normalizeCreateOptions(scopesOrOptions);
   const db = getDbInstance() as ApiKeysDbLike;
   const now = new Date().toISOString();
 
-  const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
-  const result = generateApiKeyWithMachine(machineId);
+  const { generateApiKeyWithMachine, generateQrouterApiKey } =
+    await import("@/shared/utils/apiKey");
+  const result = options.commercialKey
+    ? generateQrouterApiKey()
+    : generateApiKeyWithMachine(machineId);
+  const tokenLimit = parseNullableNonNegativeInt(options.tokenLimit);
+  const dailyTokenLimit = parseNullableNonNegativeInt(options.dailyTokenLimit);
+  const hourlyTokenLimit = parseNullableNonNegativeInt(options.hourlyTokenLimit);
+  const maxRequestsPerDay = parseNullableNonNegativeInt(options.maxRequestsPerDay);
+  const maxRequestsPerMinute = parseNullableNonNegativeInt(options.maxRequestsPerMinute);
 
   const apiKey = {
     id: uuidv4(),
@@ -553,7 +651,17 @@ export async function createApiKey(name: string, machineId: string, scopes: stri
     allowedConnections: [], // Empty array means all connections allowed
     noLog: false,
     createdAt: now,
-    scopes,
+    scopes: options.scopes,
+    customerName: parseNullableString(options.customerName),
+    internalNote: parseNullableString(options.internalNote),
+    tokenLimit,
+    dailyTokenLimit,
+    hourlyTokenLimit,
+    tokenUsed: 0,
+    commercialKey: options.commercialKey,
+    maxRequestsPerDay,
+    maxRequestsPerMinute,
+    expiresAt: parseNullableTimestamp(options.expiresAt),
   };
 
   const stmt = getPreparedStatements(db);
@@ -565,9 +673,19 @@ export async function createApiKey(name: string, machineId: string, scopes: stri
     "[]",
     0,
     apiKey.createdAt,
-    apiKey.key.slice(0, 12),
+    apiKey.key.slice(0, 24),
     await hashKey(apiKey.key),
-    JSON.stringify(scopes)
+    JSON.stringify(options.scopes),
+    apiKey.customerName,
+    apiKey.internalNote,
+    apiKey.tokenLimit,
+    apiKey.dailyTokenLimit,
+    apiKey.hourlyTokenLimit,
+    apiKey.tokenUsed,
+    apiKey.commercialKey ? 1 : 0,
+    apiKey.maxRequestsPerDay,
+    apiKey.maxRequestsPerMinute,
+    apiKey.expiresAt
   );
   setNoLog(apiKey.id, false);
 
@@ -581,9 +699,13 @@ export async function regenerateApiKey(id: string) {
   const row = stmt.getKeyById.get(id) as ApiKeyRow | undefined;
   if (!row) return null;
 
-  const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
+  const { generateApiKeyWithMachine, generateQrouterApiKey } =
+    await import("@/shared/utils/apiKey");
   const machineId = (row.machine_id || row.machineId || "0000000000000000") as string;
-  const { key: newKey } = generateApiKeyWithMachine(machineId);
+  const isCommercial = parseCommercialKey(row.commercial_key ?? (row as JsonRecord).commercialKey);
+  const { key: newKey } = isCommercial
+    ? generateQrouterApiKey()
+    : generateApiKeyWithMachine(machineId);
   const newHash = await hashKey(newKey);
   const newPrefix = newKey.slice(0, 12);
 
@@ -625,6 +747,11 @@ export async function updateApiKeyPermissions(
         rateLimits?: RateLimitRule[] | null;
         isBanned?: boolean;
         expiresAt?: string | null;
+        customerName?: string | null;
+        internalNote?: string | null;
+        tokenLimit?: number | null;
+        dailyTokenLimit?: number | null;
+        hourlyTokenLimit?: number | null;
         // T08: max concurrent sessions for this key (0 = unlimited)
         maxSessions?: number | null;
         scopes?: string[] | null;
@@ -649,6 +776,11 @@ export async function updateApiKeyPermissions(
           rateLimits: update.rateLimits,
           isBanned: update.isBanned,
           expiresAt: update.expiresAt,
+          customerName: update.customerName,
+          internalNote: update.internalNote,
+          tokenLimit: update.tokenLimit,
+          dailyTokenLimit: update.dailyTokenLimit,
+          hourlyTokenLimit: update.hourlyTokenLimit,
           maxSessions: (update as { maxSessions?: number | null }).maxSessions,
           scopes: (update as { scopes?: string[] | null }).scopes,
         };
@@ -666,6 +798,11 @@ export async function updateApiKeyPermissions(
     normalized.rateLimits === undefined &&
     normalized.isBanned === undefined &&
     normalized.expiresAt === undefined &&
+    normalized.customerName === undefined &&
+    normalized.internalNote === undefined &&
+    normalized.tokenLimit === undefined &&
+    normalized.dailyTokenLimit === undefined &&
+    normalized.hourlyTokenLimit === undefined &&
     (normalized as Record<string, unknown>).maxSessions === undefined &&
     (normalized as Record<string, unknown>).scopes === undefined
   ) {
@@ -688,6 +825,11 @@ export async function updateApiKeyPermissions(
     isBanned?: number;
     maxSessions?: number;
     expiresAt?: string | null;
+    customerName?: string | null;
+    internalNote?: string | null;
+    tokenLimit?: number | null;
+    dailyTokenLimit?: number | null;
+    hourlyTokenLimit?: number | null;
     scopes?: string;
   } = { id };
 
@@ -753,6 +895,31 @@ export async function updateApiKeyPermissions(
   if (normalized.expiresAt !== undefined) {
     updates.push("expires_at = @expiresAt");
     params.expiresAt = normalized.expiresAt;
+  }
+
+  if (normalized.customerName !== undefined) {
+    updates.push("customer_name = @customerName");
+    params.customerName = parseNullableString(normalized.customerName);
+  }
+
+  if (normalized.internalNote !== undefined) {
+    updates.push("internal_note = @internalNote");
+    params.internalNote = parseNullableString(normalized.internalNote);
+  }
+
+  if (normalized.tokenLimit !== undefined) {
+    updates.push("token_limit = @tokenLimit");
+    params.tokenLimit = parseNullableNonNegativeInt(normalized.tokenLimit);
+  }
+
+  if (normalized.dailyTokenLimit !== undefined) {
+    updates.push("daily_token_limit = @dailyTokenLimit");
+    params.dailyTokenLimit = parseNullableNonNegativeInt(normalized.dailyTokenLimit);
+  }
+
+  if (normalized.hourlyTokenLimit !== undefined) {
+    updates.push("hourly_token_limit = @hourlyTokenLimit");
+    params.hourlyTokenLimit = parseNullableNonNegativeInt(normalized.hourlyTokenLimit);
   }
 
   const maxSessionsUpdate = (normalized as Record<string, unknown>).maxSessions;
@@ -860,6 +1027,23 @@ export async function setApiKeyExpiry(id: string, expiresAt: string | null): Pro
   await deleteRedisAuthCacheForKeyId(db, id);
   backupDbFile("pre-write");
   return true;
+}
+
+export function incrementApiKeyTokenUsage(id: string, totalTokens: number): boolean {
+  if (!id || !Number.isFinite(totalTokens) || totalTokens <= 0) return false;
+
+  const db = getDbInstance() as ApiKeysDbLike;
+  getPreparedStatements(db);
+  const result = db
+    .prepare("UPDATE api_keys SET token_used = COALESCE(token_used, 0) + @tokens WHERE id = @id")
+    .run({ id, tokens: Math.floor(totalTokens) });
+
+  if ((result.changes ?? 0) > 0) {
+    invalidateCaches();
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -1004,6 +1188,13 @@ export async function getApiKeyMetadata(
       ipAllowlist: [],
       isBanned: false,
       keyHash: null,
+      customerName: null,
+      internalNote: null,
+      tokenLimit: null,
+      dailyTokenLimit: null,
+      hourlyTokenLimit: null,
+      tokenUsed: 0,
+      commercialKey: false,
       scopes: ["manage"],
     };
   }
@@ -1055,6 +1246,21 @@ export async function getApiKeyMetadata(
     scopes: parseStringList((record as JsonRecord).scopes),
     isBanned: parseIsBanned(record.is_banned ?? (record as JsonRecord).isBanned),
     keyHash: (record.key_hash ?? (record as JsonRecord).keyHash) as string | null,
+    customerName: parseNullableString(record.customer_name ?? (record as JsonRecord).customerName),
+    internalNote: parseNullableString(record.internal_note ?? (record as JsonRecord).internalNote),
+    tokenLimit: parseNullableNonNegativeInt(
+      record.token_limit ?? (record as JsonRecord).tokenLimit
+    ),
+    dailyTokenLimit: parseNullableNonNegativeInt(
+      record.daily_token_limit ?? (record as JsonRecord).dailyTokenLimit
+    ),
+    hourlyTokenLimit: parseNullableNonNegativeInt(
+      record.hourly_token_limit ?? (record as JsonRecord).hourlyTokenLimit
+    ),
+    tokenUsed: parseNonNegativeInt(record.token_used ?? (record as JsonRecord).tokenUsed),
+    commercialKey: parseCommercialKey(
+      record.commercial_key ?? (record as JsonRecord).commercialKey
+    ),
   };
 
   if (!metadata.id) {

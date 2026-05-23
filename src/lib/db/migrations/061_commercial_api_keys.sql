@@ -1,0 +1,5 @@
+ALTER TABLE api_keys ADD COLUMN customer_name TEXT;
+ALTER TABLE api_keys ADD COLUMN internal_note TEXT;
+ALTER TABLE api_keys ADD COLUMN token_limit INTEGER;
+ALTER TABLE api_keys ADD COLUMN token_used INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE api_keys ADD COLUMN commercial_key INTEGER NOT NULL DEFAULT 0;

@@ -2069,6 +2069,8 @@ async function validateOpenAICompatibleProvider({ apiKey, providerSpecificData =
     typeof providerSpecificData?.validationModelId === "string"
       ? providerSpecificData.validationModelId.trim()
       : "";
+  const apiType = providerSpecificData.apiType || "chat";
+  const canProbeResponses = apiType === "responses" && Boolean(validationModelId);
 
   // Step 1: Try GET /models
   let modelsReachable = false;
@@ -2084,7 +2086,7 @@ async function validateOpenAICompatibleProvider({ apiKey, providerSpecificData =
       return { valid: true, error: null, method: "models_endpoint" };
     }
 
-    if (modelsRes.status === 401 || modelsRes.status === 403) {
+    if ((modelsRes.status === 401 || modelsRes.status === 403) && !canProbeResponses) {
       return { valid: false, error: "Invalid API key" };
     }
 
@@ -2112,24 +2114,35 @@ async function validateOpenAICompatibleProvider({ apiKey, providerSpecificData =
 
   // Step 2: Fallback — try a minimal chat completion request
   // Many providers don't expose /models but accept chat completions fine
-  const apiType = providerSpecificData.apiType || "chat";
   const chatSuffix = apiType === "responses" ? "/responses" : "/chat/completions";
   const chatUrl = `${baseUrl}${chatSuffix}`;
   const testModelId = validationModelId;
+  const testBody =
+    apiType === "responses"
+      ? {
+          model: testModelId,
+          input: "test",
+          max_output_tokens: 1,
+        }
+      : {
+          model: testModelId,
+          messages: [{ role: "user", content: "test" }],
+          max_tokens: 1,
+        };
 
   try {
     const chatRes = await validationWrite(chatUrl, {
       method: "POST",
       headers: buildBearerHeaders(apiKey, providerSpecificData),
-      body: JSON.stringify({
-        model: testModelId,
-        messages: [{ role: "user", content: "test" }],
-        max_tokens: 1,
-      }),
+      body: JSON.stringify(testBody),
     });
 
     if (chatRes.ok) {
-      return { valid: true, error: null, method: "chat_completions" };
+      return {
+        valid: true,
+        error: null,
+        method: apiType === "responses" ? "responses" : "chat_completions",
+      };
     }
 
     if (chatRes.status === 401 || chatRes.status === 403) {
@@ -2140,7 +2153,7 @@ async function validateOpenAICompatibleProvider({ apiKey, providerSpecificData =
       return {
         valid: true,
         error: null,
-        method: "chat_completions",
+        method: apiType === "responses" ? "responses" : "chat_completions",
         warning: "Rate limited, but credentials are valid",
       };
     }

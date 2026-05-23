@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { getAuditRequestContext, logAuditEvent } from "@/lib/compliance/index";
-import { getSettings } from "@/lib/localDb";
+import { getSettings, updateSettings } from "@/lib/localDb";
 import { SignJWT } from "jose";
 import { cookies } from "next/headers";
 import {
   ensurePersistentManagementPasswordHash,
   getStoredManagementPassword,
+  hashManagementPassword,
   verifyManagementPassword,
 } from "@/lib/auth/managementPassword";
 import { loginSchema } from "@/shared/validation/schemas";
@@ -110,8 +111,22 @@ export async function POST(request) {
     }
 
     const isValid = await verifyManagementPassword(password, storedHash);
+    const initialPassword = process.env.INITIAL_PASSWORD;
+    const envPasswordAccepted =
+      !isValid &&
+      typeof initialPassword === "string" &&
+      initialPassword.length > 0 &&
+      password === initialPassword;
 
-    if (isValid) {
+    if (envPasswordAccepted) {
+      await updateSettings({
+        password: await hashManagementPassword(password),
+        requireLogin: true,
+        setupComplete: true,
+      });
+    }
+
+    if (isValid || envPasswordAccepted) {
       const forceSecureCookie = process.env.AUTH_COOKIE_SECURE === "true";
       const forwardedProtoHeader = request.headers.get("x-forwarded-proto") || "";
       const forwardedProto = forwardedProtoHeader.split(",")[0].trim().toLowerCase();
@@ -142,6 +157,7 @@ export async function POST(request) {
         metadata: {
           hasStoredPassword: Boolean(storedHash),
           passwordMigrated: passwordState.migrated,
+          envPasswordAccepted,
           secureCookie: useSecureCookie,
         },
       });

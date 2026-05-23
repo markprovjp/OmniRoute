@@ -275,6 +275,24 @@ test("GET /api/usage/analytics includes byAccount array with cost data", async (
   assertClose(body.byAccount[0].cost, body.summary.totalCost);
 });
 
+test("GET /api/usage/analytics includes byConnection usage totals", async () => {
+  await seedAnalyticsData();
+
+  const response = await analyticsRoute.GET(makeRequest("http://localhost/api/usage/analytics"));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(body.byConnection));
+  assert.equal(body.byConnection.length, 1);
+  assert.equal(body.byConnection[0].connectionId, "test-conn");
+  assert.equal(body.byConnection[0].requests, 20);
+  assert.equal(body.byConnection[0].promptTokens, 2190);
+  assert.equal(body.byConnection[0].completionTokens, 1190);
+  assert.equal(body.byConnection[0].totalTokens, 3380);
+  assert.equal(body.byConnection[0].avgLatencyMs, 295);
+  assert.ok(body.byConnection[0].lastUsed);
+});
+
 test("GET /api/usage/analytics includes cost by API key", async () => {
   await seedAnalyticsData();
 

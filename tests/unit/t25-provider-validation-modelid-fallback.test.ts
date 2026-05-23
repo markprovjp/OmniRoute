@@ -114,3 +114,41 @@ test("T25: fallback chat probe treats 429 as valid credentials with warning", as
     globalThis.fetch = originalFetch;
   }
 });
+
+test("T25: responses-compatible validation probes /responses when /models rejects the key", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: Record<string, unknown> | null }> = [];
+
+  globalThis.fetch = async (url, init = {}) => {
+    const body = typeof init.body === "string" ? JSON.parse(init.body) : null;
+    calls.push({ url: String(url), body });
+    if (String(url).endsWith("/models")) {
+      return new Response(JSON.stringify({ error: "Models auth not available" }), { status: 401 });
+    }
+    return new Response(JSON.stringify({ id: "resp_test" }), { status: 200 });
+  };
+
+  try {
+    const result = await validateProviderApiKey({
+      provider: "openai-compatible-responses-t25",
+      apiKey: "sk-test",
+      providerSpecificData: {
+        apiType: "responses",
+        baseUrl: "https://api.example.com/v1",
+        validationModelId: "gpt-5.5",
+      },
+    });
+
+    assert.equal(result.valid, true);
+    assert.equal(result.method, "responses");
+    assert.deepEqual(
+      calls.map((call) => call.url),
+      ["https://api.example.com/v1/models", "https://api.example.com/v1/responses"]
+    );
+    assert.equal(calls[1].body?.model, "gpt-5.5");
+    assert.equal(calls[1].body?.input, "test");
+    assert.equal(calls[1].body?.max_output_tokens, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

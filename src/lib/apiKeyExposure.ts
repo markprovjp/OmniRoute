@@ -4,7 +4,8 @@ export function isApiKeyRevealEnabled(): boolean {
   const raw = String(process.env.ALLOW_API_KEY_REVEAL || "")
     .trim()
     .toLowerCase();
-  return ENABLED_VALUES.has(raw);
+  if (raw) return ENABLED_VALUES.has(raw);
+  return process.env.NODE_ENV !== "production";
 }
 
 export function maskStoredApiKey(key: unknown): string | null {

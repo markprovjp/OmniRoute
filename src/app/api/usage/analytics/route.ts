@@ -525,6 +525,26 @@ export async function GET(request: Request) {
       )
       .all(params) as Array<Record<string, unknown>>;
 
+    const connectionRows = db
+      .prepare(
+        `
+        SELECT
+          NULLIF(connection_id, '') as connectionId,
+          COUNT(*) as requests,
+          COALESCE(SUM(tokens_input), 0) as promptTokens,
+          COALESCE(SUM(tokens_output), 0) as completionTokens,
+          COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens,
+          COALESCE(AVG(latency_ms), 0) as avgLatencyMs,
+          COALESCE(MAX(timestamp), '') as lastUsed
+        FROM usage_history
+        ${whereClause}
+        GROUP BY NULLIF(connection_id, '')
+        HAVING connectionId IS NOT NULL
+        ORDER BY requests DESC
+      `
+      )
+      .all(params) as Array<Record<string, unknown>>;
+
     const apiKeyWhereClause = appendWhereCondition(
       whereClause,
       "(api_key_id IS NOT NULL AND api_key_id != '') OR (api_key_name IS NOT NULL AND api_key_name != '')"
@@ -873,6 +893,16 @@ export async function GET(request: Request) {
       cost: roundCost(accountCostByAccount.get(toStringValue(row.account, "unknown")) || 0),
     }));
 
+    const byConnection = connectionRows.map((row) => ({
+      connectionId: toStringValue(row.connectionId),
+      requests: Number(row.requests),
+      promptTokens: Number(row.promptTokens),
+      completionTokens: Number(row.completionTokens),
+      totalTokens: Number(row.totalTokens),
+      avgLatencyMs: Math.round(Number(row.avgLatencyMs)),
+      lastUsed: row.lastUsed,
+    }));
+
     const apiKeyMap = new Map<
       string,
       {
@@ -1012,6 +1042,7 @@ export async function GET(request: Request) {
       byProvider,
       byApiKey,
       byAccount,
+      byConnection,
       byServiceTier,
       weeklyPattern,
       weeklyTokens,

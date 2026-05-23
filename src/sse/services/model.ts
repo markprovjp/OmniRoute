@@ -1,5 +1,11 @@
 // Re-export from open-sse with localDb integration
-import { getModelAliases, getComboByName, getProviderNodes, getCustomModels } from "@/lib/localDb";
+import {
+  getModelAliases,
+  getComboByName,
+  getProviderNodes,
+  getCustomModels,
+  getProviderConnections,
+} from "@/lib/localDb";
 import { getCachedSettings } from "@/lib/localDb";
 import { getComboStepTarget } from "@/lib/combos/steps";
 import {
@@ -36,6 +42,41 @@ async function lookupCustomModelApiFormat(
   }
 }
 
+function normalizeBaseUrl(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .replace(/\/$/, "");
+}
+
+async function pickCustomProviderNode(nodes: any[]) {
+  if (nodes.length <= 1) return nodes[0];
+
+  const activeByNode = await Promise.all(
+    nodes.map(async (node) => {
+      try {
+        const connections = await getProviderConnections({ provider: node.id });
+        return {
+          node,
+          active: Array.isArray(connections)
+            ? connections.some((connection: any) => connection.isActive !== false)
+            : false,
+        };
+      } catch {
+        return { node, active: false };
+      }
+    })
+  );
+
+  const activeNodes = activeByNode.filter((entry) => entry.active).map((entry) => entry.node);
+  if (activeNodes.length === 1) return activeNodes[0];
+
+  const candidates = activeNodes.length > 0 ? activeNodes : nodes;
+  return (
+    candidates.find((node) => normalizeBaseUrl(node.baseUrl) === "https://shopapikey.com/v1") ||
+    candidates[0]
+  );
+}
+
 /**
  * Get full model info (parse or resolve)
  */
@@ -62,7 +103,8 @@ export async function getModelInfo(modelStr) {
 
     // Check OpenAI Compatible nodes
     const openaiNodes = await getProviderNodes({ type: "openai-compatible" });
-    const matchedOpenAI = openaiNodes.find((node) => node.prefix === prefixToCheck);
+    const matchedOpenAIs = openaiNodes.filter((node) => node.prefix === prefixToCheck);
+    const matchedOpenAI = await pickCustomProviderNode(matchedOpenAIs);
     if (matchedOpenAI) {
       const apiFormat = await lookupCustomModelApiFormat(
         matchedOpenAI.id as string,
@@ -78,7 +120,8 @@ export async function getModelInfo(modelStr) {
 
     // Check Anthropic Compatible nodes
     const anthropicNodes = await getProviderNodes({ type: "anthropic-compatible" });
-    const matchedAnthropic = anthropicNodes.find((node) => node.prefix === prefixToCheck);
+    const matchedAnthropics = anthropicNodes.filter((node) => node.prefix === prefixToCheck);
+    const matchedAnthropic = await pickCustomProviderNode(matchedAnthropics);
     if (matchedAnthropic) {
       const apiFormat = await lookupCustomModelApiFormat(
         matchedAnthropic.id as string,

@@ -1,5 +1,15 @@
 export type QuotaTokenStatus = "valid" | "expiring" | "expired" | "refreshing";
 
+export interface QuotaMetric {
+  limit: number | null;
+  used: number;
+  remaining: number | null;
+  percentRemaining: number | null;
+  resetAt: string | null;
+  reserved?: number | null;
+  effectiveUsed?: number | null;
+}
+
 export interface QuotaProviderEntry {
   name: string;
   provider: string;
@@ -9,6 +19,10 @@ export interface QuotaProviderEntry {
   percentRemaining: number;
   resetAt: string | null;
   tokenStatus: QuotaTokenStatus;
+  requestQuota?: QuotaMetric | null;
+  tokenQuota?: QuotaMetric | null;
+  quotaSource?: string | null;
+  checkedAt?: string | null;
 }
 
 export interface QuotaResponseMeta {
@@ -47,6 +61,44 @@ function normalizeTokenStatus(value: unknown): QuotaTokenStatus {
   return "valid";
 }
 
+function sanitizeQuotaMetric(input: unknown): QuotaMetric | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const source = input as Record<string, unknown>;
+  const limitRaw = toNumber(source.limit);
+  const usedRaw = toNumber(source.used) ?? toNumber(source.effectiveUsed) ?? 0;
+  const remainingRaw = toNumber(source.remaining);
+  const limit = limitRaw !== null && limitRaw >= 0 ? limitRaw : null;
+  const used = limit !== null ? clamp(usedRaw, 0, limit) : Math.max(0, usedRaw);
+  const remaining =
+    remainingRaw !== null
+      ? limit !== null
+        ? clamp(remainingRaw, 0, limit)
+        : Math.max(0, remainingRaw)
+      : limit !== null
+        ? Math.max(0, limit - used)
+        : null;
+
+  let percentRemaining = toNumber(source.percentRemaining);
+  if (percentRemaining === null && limit !== null && limit > 0 && remaining !== null) {
+    percentRemaining = (remaining / limit) * 100;
+  }
+
+  const resetAt =
+    typeof source.resetAt === "string" && source.resetAt.trim() ? source.resetAt : null;
+  const reserved = toNumber(source.reserved);
+  const effectiveUsed = toNumber(source.effectiveUsed);
+
+  return {
+    limit,
+    used,
+    remaining,
+    percentRemaining: percentRemaining === null ? null : clamp(percentRemaining, 0, 100),
+    resetAt,
+    ...(reserved !== null ? { reserved: Math.max(0, reserved) } : {}),
+    ...(effectiveUsed !== null ? { effectiveUsed: Math.max(0, effectiveUsed) } : {}),
+  };
+}
+
 export function sanitizeQuotaProvider(input: unknown): QuotaProviderEntry {
   const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
   const provider = typeof source.provider === "string" ? source.provider : "unknown";
@@ -76,6 +128,13 @@ export function sanitizeQuotaProvider(input: unknown): QuotaProviderEntry {
   const resetAt =
     typeof source.resetAt === "string" && source.resetAt.trim() ? source.resetAt : null;
 
+  const requestQuota = sanitizeQuotaMetric(source.requestQuota);
+  const tokenQuota = sanitizeQuotaMetric(source.tokenQuota);
+  const quotaSource =
+    typeof source.quotaSource === "string" && source.quotaSource.trim() ? source.quotaSource : null;
+  const checkedAt =
+    typeof source.checkedAt === "string" && source.checkedAt.trim() ? source.checkedAt : null;
+
   return {
     name,
     provider,
@@ -85,6 +144,10 @@ export function sanitizeQuotaProvider(input: unknown): QuotaProviderEntry {
     percentRemaining,
     resetAt,
     tokenStatus: normalizeTokenStatus(source.tokenStatus),
+    ...(requestQuota ? { requestQuota } : {}),
+    ...(tokenQuota ? { tokenQuota } : {}),
+    ...(quotaSource ? { quotaSource } : {}),
+    ...(checkedAt ? { checkedAt } : {}),
   };
 }
 

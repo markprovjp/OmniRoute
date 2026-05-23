@@ -106,6 +106,19 @@ test("decrypt returns null when the value is malformed or the key is wrong", asy
   assert.equal(secondModule.decrypt("enc:v1:not-valid"), null);
 });
 
+test("connection helper fails closed for encrypted fields when storage key is missing", async () => {
+  process.env.STORAGE_ENCRYPTION_KEY = "task-304-secret-missing-env";
+  const firstModule = await importFresh("src/lib/db/encryption.ts");
+  const encrypted = firstModule.encrypt("sk-do-not-send-ciphertext-upstream");
+
+  delete process.env.STORAGE_ENCRYPTION_KEY;
+  const secondModule = await importFresh("src/lib/db/encryption.ts");
+  const decrypted = secondModule.decryptConnectionFields({ apiKey: encrypted, name: "provider" });
+
+  assert.equal(decrypted.apiKey, null);
+  assert.equal(decrypted.name, "provider");
+});
+
 test("legacy encryption migration parses ciphertext in canonical payload order", async () => {
   process.env.STORAGE_ENCRYPTION_KEY = "task-304-legacy-secret";
   const encryption = await importFresh("src/lib/db/encryption.ts");

@@ -230,7 +230,6 @@ export function encryptConnectionFields<T extends ConnectionFields | null | unde
  */
 export function decryptConnectionFields<T extends ConnectionFields | null | undefined>(row: T): T {
   if (!row) return row;
-  if (!isEncryptionEnabled()) return row;
 
   return {
     ...row,

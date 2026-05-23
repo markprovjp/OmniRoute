@@ -74,6 +74,7 @@ import {
   saveCallLog,
 } from "@/lib/usageDb";
 import { formatUsageLog } from "@/lib/usage/tokenAccounting";
+import { settleApiKeyUsageReservation } from "@/lib/usage/apiKeyQuotaLedger";
 import { recordCost } from "@/domain/costRules";
 import { calculateCost } from "@/lib/usage/costCalculator";
 import { buildOmniRouteResponseMetaHeaders } from "@/domain/omnirouteResponseMeta";
@@ -4340,10 +4341,13 @@ export async function handleChatCore({
         connectionId: connectionId || undefined,
         apiKeyId: apiKeyInfo?.id || undefined,
         apiKeyName: apiKeyInfo?.name || undefined,
+        quotaReservationId: apiKeyInfo?.quotaReservationId || undefined,
         serviceTier: effectiveServiceTier,
       }).catch((err) => {
         console.error("Failed to save usage stats:", err.message);
       });
+    } else if (typeof apiKeyInfo?.quotaReservationId === "string") {
+      settleApiKeyUsageReservation({ reservationId: apiKeyInfo.quotaReservationId });
     }
 
     // Translate response to client's expected format (usually OpenAI)
@@ -4717,10 +4721,13 @@ export async function handleChatCore({
         connectionId: connectionId || undefined,
         apiKeyId: apiKeyInfo?.id || undefined,
         apiKeyName: apiKeyInfo?.name || undefined,
+        quotaReservationId: apiKeyInfo?.quotaReservationId || undefined,
         serviceTier: effectiveServiceTier,
       }).catch((err) => {
         console.error("Failed to save usage stats:", err.message);
       });
+    } else if (streamStatus === 200 && typeof apiKeyInfo?.quotaReservationId === "string") {
+      settleApiKeyUsageReservation({ reservationId: apiKeyInfo.quotaReservationId });
     }
 
     persistAttemptLogs({

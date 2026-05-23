@@ -93,6 +93,7 @@ type ModelCompatSavePatch = {
 type CompatModelRow = {
   id?: string;
   name?: string;
+  apiKey?: string | null;
   source?: string;
   apiFormat?: string;
   supportedEndpoints?: string[];
@@ -473,6 +474,65 @@ interface CooldownTimerProps {
   until: string | number | Date;
 }
 
+interface ConnectionUsageStats {
+  requests: number;
+  totalTokens: number;
+  lastUsed: string | null;
+}
+
+interface ConnectionQuotaMetric {
+  limit: number | null;
+  used: number;
+  remaining: number | null;
+  percentRemaining: number | null;
+  resetAt: string | null;
+  reserved?: number | null;
+  effectiveUsed?: number | null;
+}
+
+interface ConnectionQuotaSignal {
+  quotaUsed: number;
+  quotaTotal: number | null;
+  percentRemaining: number;
+  resetAt: string | null;
+  requestQuota?: ConnectionQuotaMetric | null;
+  tokenQuota?: ConnectionQuotaMetric | null;
+  quotaSource?: string | null;
+  checkedAt?: string | null;
+}
+
+function normalizeConnectionQuotaMetric(value: unknown): ConnectionQuotaMetric | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const limitRaw = Number(source.limit);
+  const usedRaw = Number(source.used);
+  const remainingRaw = Number(source.remaining);
+  const percentRaw = Number(source.percentRemaining);
+  const reservedRaw = Number(source.reserved);
+  const effectiveUsedRaw = Number(source.effectiveUsed);
+  const limit = Number.isFinite(limitRaw) && limitRaw >= 0 ? limitRaw : null;
+  const used = Number.isFinite(usedRaw) && usedRaw >= 0 ? usedRaw : 0;
+  const remaining = Number.isFinite(remainingRaw) && remainingRaw >= 0 ? remainingRaw : null;
+  const percentRemaining = Number.isFinite(percentRaw)
+    ? Math.min(100, Math.max(0, percentRaw))
+    : limit && remaining !== null
+      ? Math.min(100, Math.max(0, (remaining / limit) * 100))
+      : null;
+  const resetAt = typeof source.resetAt === "string" && source.resetAt ? source.resetAt : null;
+
+  return {
+    limit,
+    used,
+    remaining,
+    percentRemaining,
+    resetAt,
+    ...(Number.isFinite(reservedRaw) && reservedRaw >= 0 ? { reserved: reservedRaw } : {}),
+    ...(Number.isFinite(effectiveUsedRaw) && effectiveUsedRaw >= 0
+      ? { effectiveUsed: effectiveUsedRaw }
+      : {}),
+  };
+}
+
 function getModelSourceBadgeClass(source?: string): string {
   switch (normalizeModelCatalogSource(source)) {
     case "imported":
@@ -525,6 +585,9 @@ interface ConnectionRowConnection {
 
 interface ConnectionRowProps {
   connection: ConnectionRowConnection;
+  usage?: ConnectionUsageStats;
+  usageMaxRequests?: number;
+  quota?: ConnectionQuotaSignal;
   isOAuth: boolean;
   isClaude?: boolean;
   isCodex?: boolean;
@@ -1033,6 +1096,12 @@ export default function ProviderDetailPage() {
   const router = useRouter();
   const providerId = params.id as string;
   const [connections, setConnections] = useState([]);
+  const [connectionUsageStats, setConnectionUsageStats] = useState<
+    Record<string, ConnectionUsageStats>
+  >({});
+  const [connectionQuotaSignals, setConnectionQuotaSignals] = useState<
+    Record<string, ConnectionQuotaSignal>
+  >({});
   const [loading, setLoading] = useState(true);
   const [providerNode, setProviderNode] = useState(null);
   const [showOAuthModal, _setShowOAuthModal] = useState(false);
@@ -1055,6 +1124,7 @@ export default function ProviderDetailPage() {
   const [modelAliases, setModelAliases] = useState({});
   const { copied, copy } = useCopyToClipboard();
   const t = useTranslations("providers");
+
   const emailsVisible = useEmailPrivacyStore((s) => s.emailsVisible);
   const notify = useNotificationStore();
   const [proxyTarget, setProxyTarget] = useState(null);
@@ -1183,6 +1253,13 @@ export default function ProviderDetailPage() {
 
   const providerStorageAlias = isCompatible ? providerId : providerAlias;
   const providerDisplayAlias = isCompatible ? providerNode?.prefix || providerId : providerAlias;
+  const usageMaxRequests = useMemo(() => {
+    const maxRequests = connections.reduce((max, conn: any) => {
+      const requests = connectionUsageStats[conn.id]?.requests || 0;
+      return Math.max(max, requests);
+    }, 0);
+    return Math.max(1, maxRequests);
+  }, [connections, connectionUsageStats]);
 
   const getApiLabel = () => {
     if (isAnthropicProtocolCompatible) return t("messagesApi");
@@ -1274,6 +1351,57 @@ export default function ProviderDetailPage() {
     }
   }, [providerId, isSearchProvider]);
 
+  const fetchConnectionSignals = useCallback(async () => {
+    try {
+      const [analyticsRes, quotaRes] = await Promise.all([
+        fetch("/api/usage/analytics?range=all", { cache: "no-store" }),
+        fetch(`/api/usage/quota?provider=${encodeURIComponent(providerId)}`, {
+          cache: "no-store",
+        }),
+      ]);
+
+      const analyticsData = analyticsRes.ok ? await analyticsRes.json() : null;
+      const usageMap: Record<string, ConnectionUsageStats> = {};
+      for (const row of Array.isArray(analyticsData?.byConnection)
+        ? analyticsData.byConnection
+        : []) {
+        const connectionId = typeof row.connectionId === "string" ? row.connectionId : "";
+        if (!connectionId) continue;
+        usageMap[connectionId] = {
+          requests: Number(row.requests) || 0,
+          totalTokens: Number(row.totalTokens) || 0,
+          lastUsed: typeof row.lastUsed === "string" && row.lastUsed ? row.lastUsed : null,
+        };
+      }
+      setConnectionUsageStats(usageMap);
+
+      const quotaData = quotaRes.ok ? await quotaRes.json() : null;
+      const quotaMap: Record<string, ConnectionQuotaSignal> = {};
+      for (const entry of Array.isArray(quotaData?.providers) ? quotaData.providers : []) {
+        const connectionId = typeof entry.connectionId === "string" ? entry.connectionId : "";
+        if (!connectionId) continue;
+        const quotaTotal = Number(entry.quotaTotal);
+        quotaMap[connectionId] = {
+          quotaUsed: Number(entry.quotaUsed) || 0,
+          quotaTotal: Number.isFinite(quotaTotal) && quotaTotal > 0 ? quotaTotal : null,
+          percentRemaining: Math.min(100, Math.max(0, Number(entry.percentRemaining) || 100)),
+          resetAt: typeof entry.resetAt === "string" && entry.resetAt ? entry.resetAt : null,
+          requestQuota: normalizeConnectionQuotaMetric(entry.requestQuota),
+          tokenQuota: normalizeConnectionQuotaMetric(entry.tokenQuota),
+          quotaSource:
+            typeof entry.quotaSource === "string" && entry.quotaSource ? entry.quotaSource : null,
+          checkedAt:
+            typeof entry.checkedAt === "string" && entry.checkedAt ? entry.checkedAt : null,
+        };
+      }
+      setConnectionQuotaSignals(quotaMap);
+    } catch (error) {
+      console.log("Error fetching connection usage signals:", error);
+      setConnectionUsageStats({});
+      setConnectionQuotaSignals({});
+    }
+  }, [providerId]);
+
   const fetchConnections = useCallback(async () => {
     try {
       const [connectionsRes, nodesRes] = await Promise.all([
@@ -1333,13 +1461,14 @@ export default function ProviderDetailPage() {
 
   useEffect(() => {
     fetchConnections();
+    fetchConnectionSignals();
     fetchAliases();
     // Load proxy config for visual indicators (provider-level button)
     fetch("/api/settings/proxy")
       .then((r) => (r.ok ? r.json() : null))
       .then((c) => setProxyConfig(c))
       .catch(() => {});
-  }, [fetchConnections, fetchAliases]);
+  }, [fetchConnections, fetchConnectionSignals, fetchAliases]);
 
   const handleZedImport = useCallback(async () => {
     if (importingZed) return;
@@ -3796,6 +3925,9 @@ export default function ProviderDetailPage() {
                         <ConnectionRow
                           key={conn.id}
                           connection={conn}
+                          usage={connectionUsageStats[conn.id]}
+                          usageMaxRequests={usageMaxRequests}
+                          quota={connectionQuotaSignals[conn.id]}
                           isOAuth={conn.authType === "oauth"}
                           isClaude={providerId === "claude"}
                           codexFastGlobalEnabled={codexGlobalFastServiceTier}
@@ -3978,6 +4110,9 @@ export default function ProviderDetailPage() {
                               <ConnectionRow
                                 key={conn.id}
                                 connection={conn}
+                                usage={connectionUsageStats[conn.id]}
+                                usageMaxRequests={usageMaxRequests}
+                                quota={connectionQuotaSignals[conn.id]}
                                 isOAuth={conn.authType === "oauth"}
                                 isClaude={providerId === "claude"}
                                 codexFastGlobalEnabled={codexGlobalFastServiceTier}
@@ -6128,6 +6263,9 @@ function getStatusPresentation(connection, effectiveStatus, isCooldown, t) {
 
 function ConnectionRow({
   connection,
+  usage,
+  usageMaxRequests = 1,
+  quota,
   isOAuth,
   isClaude,
   isCodex,
@@ -6172,6 +6310,8 @@ function ConnectionRow({
   isExportingGeminiAuthFile,
 }: ConnectionRowProps) {
   const t = useTranslations("providers");
+  const tCommon = useTranslations("common");
+  const { copied: copiedConnectionKey, copy: copyConnectionKey } = useCopyToClipboard();
   const emailsVisible = useEmailPrivacyStore((s) => s.emailsVisible);
   const displayName = isOAuth
     ? pickDisplayValue(
@@ -6272,6 +6412,31 @@ function ConnectionRow({
     ? isClaudeExtraUsageBlockEnabled("claude", connection.providerSpecificData)
     : false;
   const cliproxyapiDeepMode = !!cliproxyapiEnabled;
+  const usageRequests = usage?.requests || 0;
+  const usageTokens = usage?.totalTokens || 0;
+  const hasUsageMeter = usageRequests > 0 || usageTokens > 0;
+  const activityPct = hasUsageMeter
+    ? Math.min(100, Math.max(5, (usageRequests / Math.max(1, usageMaxRequests)) * 100))
+    : 0;
+  const quotaTotal = quota?.quotaTotal ?? null;
+  const quotaUsed = quotaTotal
+    ? Math.min(quota?.quotaUsed || 0, quotaTotal)
+    : quota?.quotaUsed || 0;
+  const quotaPct = quotaTotal ? Math.min(100, Math.max(0, (quotaUsed / quotaTotal) * 100)) : 0;
+  const quotaRemaining = quotaTotal ? Math.max(0, quotaTotal - quotaUsed) : null;
+  const quotaMetrics = [
+    { label: "Tokens", metric: quota?.tokenQuota, tone: "tokens" },
+    { label: "Requests", metric: quota?.requestQuota, tone: "requests" },
+  ].filter((entry): entry is { label: string; metric: ConnectionQuotaMetric; tone: string } =>
+    Boolean(entry.metric && entry.metric.limit !== null && entry.metric.limit > 0)
+  );
+  const hasUpstreamQuotaMetrics = quotaMetrics.length > 0;
+  const hasSingleQuotaMeter = !hasUpstreamQuotaMetrics && quotaTotal !== null && quotaTotal > 0;
+  const hasQuotaMeter = hasUpstreamQuotaMetrics || hasSingleQuotaMeter;
+  const canCopyConnectionKey =
+    typeof connection.apiKey === "string" &&
+    connection.apiKey.length > 0 &&
+    !connection.apiKey.includes("****");
 
   return (
     <div
@@ -6348,6 +6513,27 @@ function ConnectionRow({
               </span>
             )}
             <span className="text-xs text-text-muted">#{connection.priority}</span>
+            {canCopyConnectionKey && (
+              <button
+                type="button"
+                onClick={() =>
+                  copyConnectionKey(
+                    connection.apiKey!,
+                    `connection_key_${connection.id || "primary"}`
+                  )
+                }
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-text-muted hover:bg-primary/10 hover:text-primary transition-colors"
+                title={tCommon("copy")}
+                aria-label={tCommon("copy")}
+              >
+                <span className="material-symbols-outlined text-[14px]">
+                  {copiedConnectionKey === `connection_key_${connection.id || "primary"}`
+                    ? "check"
+                    : "content_copy"}
+                </span>
+                key
+              </button>
+            )}
             {connection.globalPriority && (
               <span className="text-xs text-text-muted">
                 {t("autoPriority", { priority: connection.globalPriority })}
@@ -6486,6 +6672,102 @@ function ConnectionRow({
                 );
               })()}
           </div>
+          {(hasQuotaMeter || hasUsageMeter) && (
+            <div className="mt-2 flex w-full max-w-xl flex-col gap-1.5">
+              {hasUpstreamQuotaMetrics && (
+                <div className="flex flex-col gap-1.5">
+                  {quotaMetrics.map(({ label, metric, tone }) => {
+                    const remainingPct =
+                      metric.percentRemaining ??
+                      (metric.limit && metric.remaining !== null
+                        ? (metric.remaining / metric.limit) * 100
+                        : 0);
+                    const usedPct = Math.min(100, Math.max(0, 100 - remainingPct));
+                    return (
+                      <div key={label} className="flex flex-col gap-1">
+                        <div className="flex items-center justify-between gap-2 text-[10px] text-text-muted tabular-nums">
+                          <span>
+                            {label} used {metric.used.toLocaleString()}
+                          </span>
+                          <span>
+                            {(metric.remaining ?? 0).toLocaleString()} left /{" "}
+                            {metric.limit?.toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                          <div
+                            className={`h-full rounded-full transition-all duration-300 ${
+                              usedPct >= 100
+                                ? "bg-gradient-to-r from-red-500 to-rose-500"
+                                : usedPct >= 70
+                                  ? "bg-gradient-to-r from-amber-500 to-orange-500"
+                                  : tone === "requests"
+                                    ? "bg-gradient-to-r from-sky-500 to-cyan-500"
+                                    : "bg-gradient-to-r from-emerald-500 to-teal-500"
+                            }`}
+                            style={{ width: `${usedPct}%` }}
+                          />
+                        </div>
+                        {metric.resetAt && (
+                          <span className="text-[9px] text-text-muted/60">
+                            resets {new Date(metric.resetAt).toLocaleString()}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {hasSingleQuotaMeter && (
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between gap-2 text-[10px] text-text-muted tabular-nums">
+                    <span>Quota {Math.round(quotaPct)}% used</span>
+                    <span>{quotaRemaining?.toLocaleString()} left</span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                    <div
+                      className={`h-full rounded-full transition-all duration-300 ${
+                        quotaPct < 70
+                          ? "bg-gradient-to-r from-emerald-500 to-teal-500"
+                          : quotaPct < 100
+                            ? "bg-gradient-to-r from-amber-500 to-orange-500"
+                            : "bg-gradient-to-r from-red-500 to-rose-500"
+                      }`}
+                      style={{ width: `${quotaPct}%` }}
+                    />
+                  </div>
+                  {quota?.resetAt && (
+                    <span className="text-[9px] text-text-muted/60">
+                      resets {new Date(quota.resetAt).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+              )}
+              {hasUsageMeter && (
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between gap-2 text-[10px] text-text-muted tabular-nums">
+                    <span>Requests {usageRequests.toLocaleString()}</span>
+                    <span>{usageTokens.toLocaleString()} tokens</span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 transition-all duration-300"
+                      style={{ width: `${activityPct}%` }}
+                    />
+                  </div>
+                  <span className="text-[9px] text-text-muted/60">
+                    {hasQuotaMeter
+                      ? usage?.lastUsed
+                        ? `last used ${new Date(usage.lastUsed).toLocaleDateString()}`
+                        : "quota reported by upstream"
+                      : usage?.lastUsed
+                        ? `last used ${new Date(usage.lastUsed).toLocaleDateString()}`
+                        : "local usage"}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
       <div className="flex items-center gap-2">
@@ -9059,6 +9341,7 @@ function normalizeAndValidateHttpBaseUrl(rawValue, fallbackUrl) {
 
 function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnectionModalProps) {
   const t = useTranslations("providers");
+  const tCommon = useTranslations("common");
   const notify = useNotificationStore();
   const [formData, setFormData] = useState({
     name: "",
@@ -9112,6 +9395,7 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnec
   const [showAdvanced, setShowAdvanced] = useState(false);
   const { emailsVisible: showEmail, toggleEmailVisibility: toggleShowEmail } =
     useEmailPrivacyStore();
+  const { copied: copiedExtra, copy: copyExtra } = useCopyToClipboard();
 
   const usesBaseUrl = isBaseUrlConfigurableProvider(connection?.provider);
   const defaultBaseUrl = getProviderBaseUrlDefault(connection?.provider);
@@ -9904,6 +10188,17 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnec
                           </span>
                         )}
                         <button
+                          type="button"
+                          onClick={() => copyExtra(key, keyId)}
+                          className="p-1.5 rounded hover:bg-primary/10 text-text-muted hover:text-primary transition-colors shrink-0"
+                          title={tCommon("copy")}
+                        >
+                          <span className="material-symbols-outlined text-[16px]">
+                            {copiedExtra === keyId ? "check" : "content_copy"}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => setExtraApiKeys(extraApiKeys.filter((_, i) => i !== idx))}
                           className="p-1.5 rounded hover:bg-red-500/10 text-red-400 hover:text-red-500"
                           title={t("removeThisKey")}

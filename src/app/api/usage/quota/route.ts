@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getProviderConnections } from "@/lib/localDb";
+import { getProviderConnections, getProviderNodeById, saveQuotaSnapshot } from "@/lib/localDb";
 import {
   getLearnedLimits,
   getRateLimitStatus,
@@ -7,11 +7,23 @@ import {
 import {
   normalizeQuotaResponse,
   sanitizeQuotaProvider,
+  type QuotaMetric,
   type QuotaProviderEntry,
   type QuotaTokenStatus,
 } from "@/shared/contracts/quota";
+import {
+  fetchShopApiKeyPublicUsage,
+  isShopApiKeyUsageBaseUrl,
+  type ShopApiKeyUsageSnapshot,
+} from "@/lib/usage/shopApiKeyUsage";
 
 type ProviderConnectionRecord = Record<string, unknown>;
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
 
 function toDateMs(value: unknown): number | null {
   if (typeof value !== "string" || !value.trim()) return null;
@@ -119,6 +131,82 @@ function buildQuotaEntry(
   });
 }
 
+function getMetricPercentRemaining(metric: QuotaMetric | null): number | null {
+  if (!metric) return null;
+  if (typeof metric.percentRemaining === "number" && Number.isFinite(metric.percentRemaining)) {
+    return Math.min(100, Math.max(0, metric.percentRemaining));
+  }
+  if (metric.limit && metric.limit > 0 && metric.remaining !== null) {
+    return Math.min(100, Math.max(0, (metric.remaining / metric.limit) * 100));
+  }
+  return null;
+}
+
+function saveShopApiKeyQuotaSnapshot(
+  connection: ProviderConnectionRecord,
+  windowKey: string,
+  metric: QuotaMetric | null
+) {
+  const provider = typeof connection.provider === "string" ? connection.provider : "unknown";
+  const connectionId = typeof connection.id === "string" ? connection.id : "unknown";
+  const remainingPercentage = getMetricPercentRemaining(metric);
+  if (!metric || remainingPercentage === null || connectionId === "unknown") return;
+
+  saveQuotaSnapshot({
+    provider,
+    connection_id: connectionId,
+    window_key: windowKey,
+    remaining_percentage: remainingPercentage,
+    is_exhausted: metric.remaining === 0 ? 1 : 0,
+    next_reset_at: metric.resetAt,
+    window_duration_ms: null,
+    raw_data: JSON.stringify(metric),
+  });
+}
+
+function buildShopApiKeyQuotaEntry(
+  baseEntry: QuotaProviderEntry,
+  usage: ShopApiKeyUsageSnapshot
+): QuotaProviderEntry {
+  const primaryQuota = usage.tokenQuota || usage.requestQuota;
+  const percentRemaining = getMetricPercentRemaining(primaryQuota);
+
+  return sanitizeQuotaProvider({
+    ...baseEntry,
+    quotaUsed: primaryQuota?.used ?? baseEntry.quotaUsed,
+    quotaTotal: primaryQuota?.limit ?? baseEntry.quotaTotal,
+    percentRemaining: percentRemaining ?? baseEntry.percentRemaining,
+    resetAt: primaryQuota?.resetAt ?? baseEntry.resetAt,
+    requestQuota: usage.requestQuota,
+    tokenQuota: usage.tokenQuota,
+    checkedAt: usage.checkedAt,
+    quotaSource: "shopapikey-public-usage",
+  });
+}
+
+function getConnectionBaseUrl(connection: ProviderConnectionRecord): string | null {
+  const providerSpecificData = toRecord(connection.providerSpecificData);
+  return typeof providerSpecificData.baseUrl === "string" && providerSpecificData.baseUrl.trim()
+    ? providerSpecificData.baseUrl
+    : null;
+}
+
+async function getShopApiKeyUsageIfSupported(
+  connection: ProviderConnectionRecord
+): Promise<ShopApiKeyUsageSnapshot | null> {
+  const apiKey = typeof connection.apiKey === "string" ? connection.apiKey : "";
+  if (!apiKey.trim()) return null;
+
+  let baseUrl = getConnectionBaseUrl(connection);
+  if (!baseUrl && typeof connection.provider === "string") {
+    const node = (await getProviderNodeById(connection.provider)) as Record<string, unknown> | null;
+    baseUrl = typeof node?.baseUrl === "string" ? node.baseUrl : null;
+  }
+  if (!isShopApiKeyUsageBaseUrl(baseUrl)) return null;
+
+  return fetchShopApiKeyPublicUsage(apiKey);
+}
+
 /**
  * GET /api/usage/quota
  *
@@ -143,11 +231,29 @@ export async function GET(request: Request) {
     }
 
     const learnedLimits = getLearnedLimits();
-    const providers = connections.map((conn) => {
-      const learnedLimit = learnedLimits?.[`${conn.provider}:${conn.id}`] || null;
-      const rateStatus = getRateLimitStatus(conn.provider, conn.id);
-      return buildQuotaEntry(conn, learnedLimit, rateStatus);
-    });
+    const providers = await Promise.all(
+      connections.map(async (conn) => {
+        const learnedLimit = learnedLimits?.[`${conn.provider}:${conn.id}`] || null;
+        const rateStatus = getRateLimitStatus(conn.provider, conn.id);
+        const quotaEntry = buildQuotaEntry(conn, learnedLimit, rateStatus);
+
+        try {
+          const shopApiKeyUsage = await getShopApiKeyUsageIfSupported(conn);
+          if (shopApiKeyUsage) {
+            saveShopApiKeyQuotaSnapshot(conn, "shopapikey:requests", shopApiKeyUsage.requestQuota);
+            saveShopApiKeyQuotaSnapshot(conn, "shopapikey:tokens", shopApiKeyUsage.tokenQuota);
+            return buildShopApiKeyQuotaEntry(quotaEntry, shopApiKeyUsage);
+          }
+        } catch (error) {
+          console.warn(
+            `[API] GET /api/usage/quota shopapikey usage fetch failed for ${conn.provider}:${conn.id}:`,
+            error
+          );
+        }
+
+        return quotaEntry;
+      })
+    );
 
     const response = normalizeQuotaResponse(
       {

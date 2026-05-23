@@ -8,6 +8,8 @@
  */
 
 import { getDbInstance } from "../db/core";
+import { incrementApiKeyTokenUsage } from "../db/apiKeys";
+import { settleApiKeyUsageReservation } from "./apiKeyQuotaLedger";
 import { protectPayloadForLog } from "../logPayloads";
 import { shouldPersistToDisk } from "./migrations";
 import {
@@ -340,6 +342,12 @@ export async function saveRequestUsage(entry: any) {
     const timestamp = entry.timestamp || new Date().toISOString();
     const serviceTier = normalizeServiceTier(entry.serviceTier ?? entry.service_tier);
 
+    const inputTokens = getLoggedInputTokens(entry.tokens);
+    const outputTokens = getLoggedOutputTokens(entry.tokens);
+    const cacheReadTokens = getPromptCacheReadTokens(entry.tokens);
+    const cacheCreationTokens = getPromptCacheCreationTokens(entry.tokens);
+    const reasoningTokens = getReasoningTokens(entry.tokens);
+
     db.prepare(
       `
       INSERT INTO usage_history (provider, model, connection_id, api_key_id, api_key_name,
@@ -353,11 +361,11 @@ export async function saveRequestUsage(entry: any) {
       entry.connectionId || null,
       entry.apiKeyId || null,
       entry.apiKeyName || null,
-      getLoggedInputTokens(entry.tokens),
-      getLoggedOutputTokens(entry.tokens),
-      getPromptCacheReadTokens(entry.tokens),
-      getPromptCacheCreationTokens(entry.tokens),
-      getReasoningTokens(entry.tokens),
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      reasoningTokens,
       serviceTier,
       entry.status || null,
       entry.success === false ? 0 : 1,
@@ -370,6 +378,21 @@ export async function saveRequestUsage(entry: any) {
       entry.errorCode || null,
       timestamp
     );
+
+    const totalBillableTokens = inputTokens + outputTokens;
+    if (entry.success !== false && typeof entry.apiKeyId === "string" && totalBillableTokens > 0) {
+      if (typeof entry.quotaReservationId === "string" && entry.quotaReservationId) {
+        settleApiKeyUsageReservation({
+          reservationId: entry.quotaReservationId,
+          actualTokens: totalBillableTokens,
+          inputTokens,
+          outputTokens,
+          usageSource: "actual",
+        });
+        return;
+      }
+      incrementApiKeyTokenUsage(entry.apiKeyId, totalBillableTokens);
+    }
   } catch (error) {
     console.error("Failed to save usage stats:", error);
   }

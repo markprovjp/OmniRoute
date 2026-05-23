@@ -6,6 +6,8 @@ import { createKeySchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { isApiKeyRevealEnabled, maskStoredApiKey } from "@/lib/apiKeyExposure";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
+import { getApiKeyUsageSummaries } from "@/lib/usage/apiKeyUsageSummary";
+import { getApiKeyQuotaSnapshots } from "@/lib/usage/apiKeyQuotaLedger";
 import * as log from "@/sse/utils/logger";
 
 function parsePagination(request: Request) {
@@ -37,9 +39,19 @@ export async function GET(request: Request) {
     const { limit, offset } = parsePagination(request);
     const pagedKeys =
       limit === null ? maskedKeys.slice(offset) : maskedKeys.slice(offset, offset + limit);
+    const usageByKeyId = getApiKeyUsageSummaries(
+      pagedKeys.map((key) => (typeof key.id === "string" ? key.id : ""))
+    );
+    const quotaByKeyId = getApiKeyQuotaSnapshots(
+      pagedKeys.map((key) => (typeof key.id === "string" ? key.id : ""))
+    );
 
     return NextResponse.json({
-      keys: pagedKeys,
+      keys: pagedKeys.map((key) => ({
+        ...key,
+        usage: usageByKeyId[String(key.id)],
+        quota: quotaByKeyId[String(key.id)],
+      })),
       total: maskedKeys.length,
       allowKeyReveal: isApiKeyRevealEnabled(),
     });
@@ -62,13 +74,42 @@ export async function POST(request) {
     if (isValidationFailure(validation)) {
       return NextResponse.json({ error: validation.error }, { status: 400 });
     }
-    const { name, noLog, scopes } = validation.data;
+    const {
+      name,
+      noLog,
+      scopes,
+      customerName,
+      internalNote,
+      tokenLimit,
+      dailyTokenLimit,
+      hourlyTokenLimit,
+      maxRequestsPerDay,
+      maxRequestsPerMinute,
+      expiresAt,
+    } = validation.data;
 
     // Always get machineId from server
     const machineId = await getConsistentMachineId();
-    const apiKey = await createApiKey(name, machineId, scopes ?? []);
+    const apiKey = await createApiKey(name, machineId, {
+      scopes: scopes ?? [],
+      customerName: customerName ?? name,
+      internalNote: internalNote ?? null,
+      tokenLimit: tokenLimit ?? null,
+      dailyTokenLimit: dailyTokenLimit ?? null,
+      hourlyTokenLimit: hourlyTokenLimit ?? null,
+      maxRequestsPerDay: maxRequestsPerDay ?? null,
+      maxRequestsPerMinute: maxRequestsPerMinute ?? null,
+      expiresAt: expiresAt ?? null,
+      commercialKey: true,
+    });
     if (noLog === true) {
       await updateApiKeyPermissions(apiKey.id, { noLog: true });
+    }
+    if (maxRequestsPerDay !== undefined || maxRequestsPerMinute !== undefined) {
+      await updateApiKeyPermissions(apiKey.id, {
+        maxRequestsPerDay: maxRequestsPerDay ?? null,
+        maxRequestsPerMinute: maxRequestsPerMinute ?? null,
+      });
     }
 
     // Auto sync to Cloud if enabled
@@ -81,6 +122,16 @@ export async function POST(request) {
         id: apiKey.id,
         machineId: apiKey.machineId,
         noLog: noLog === true,
+        customerName: apiKey.customerName,
+        internalNote: apiKey.internalNote,
+        tokenLimit: apiKey.tokenLimit,
+        dailyTokenLimit: apiKey.dailyTokenLimit,
+        hourlyTokenLimit: apiKey.hourlyTokenLimit,
+        tokenUsed: apiKey.tokenUsed,
+        commercialKey: apiKey.commercialKey,
+        maxRequestsPerDay: maxRequestsPerDay ?? null,
+        maxRequestsPerMinute: maxRequestsPerMinute ?? null,
+        expiresAt: apiKey.expiresAt,
       },
       { status: 201 }
     );

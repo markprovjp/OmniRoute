@@ -17,6 +17,8 @@ const compliance = await import("../../src/lib/compliance/index.ts");
 const listRoute = await import("../../src/app/api/keys/route.ts");
 const keyRoute = await import("../../src/app/api/keys/[id]/route.ts");
 const revealRoute = await import("../../src/app/api/keys/[id]/reveal/route.ts");
+const usageHistory = await import("../../src/lib/usage/usageHistory.ts");
+const apiKeyPolicy = await import("../../src/shared/utils/apiKeyPolicy.ts");
 
 const MACHINE_ID = "1234567890abcdef";
 
@@ -126,9 +128,81 @@ test("POST /api/keys creates a key, preserves special characters, and persists n
   assert.equal(response.status, 201);
   assert.equal(body.name, "Key / Prod #1");
   assert.equal(body.noLog, true);
-  assert.match(body.key, /^sk-[a-z0-9-]+/i);
+  assert.match(body.key, /^qrouter_sk_[A-Za-z0-9_-]+$/);
   assert.equal(stored?.noLog, true);
   assert.equal(compliance.isNoLog(body.id), true);
+});
+
+test("POST /api/keys stores QRouter customer metadata and counts token usage", async () => {
+  await enableManagementAuth();
+  await createManagementKey();
+  const expiresAt = new Date(Date.now() + 7 * 86400_000).toISOString();
+  const response = await listRoute.POST(
+    await makeManagementSessionRequest("http://localhost/api/keys", {
+      method: "POST",
+      body: {
+        name: "Nguyen Van A",
+        customerName: "Nguyen Van A",
+        internalNote: "Pilot customer",
+        tokenLimit: 1000,
+        dailyTokenLimit: 400,
+        hourlyTokenLimit: 120,
+        maxRequestsPerDay: 25,
+        expiresAt,
+      },
+    })
+  );
+  const body = (await response.json()) as any;
+
+  await usageHistory.saveRequestUsage({
+    apiKeyId: body.id,
+    apiKeyName: body.name,
+    provider: "openai",
+    model: "gpt-test",
+    status: "200",
+    success: true,
+    tokens: { input: 12, output: 8 },
+  });
+
+  const stored = await apiKeysDb.getApiKeyById(body.id);
+  const metadata = await apiKeysDb.getApiKeyMetadata(body.key);
+
+  assert.equal(response.status, 201);
+  assert.match(body.key, /^qrouter_sk_[A-Za-z0-9_-]+$/);
+  assert.equal(stored?.customerName, "Nguyen Van A");
+  assert.equal(stored?.internalNote, "Pilot customer");
+  assert.equal(stored?.tokenLimit, 1000);
+  assert.equal(stored?.dailyTokenLimit, 400);
+  assert.equal(stored?.hourlyTokenLimit, 120);
+  assert.equal(stored?.maxRequestsPerDay, 25);
+  assert.equal(stored?.tokenUsed, 20);
+  assert.equal(stored?.commercialKey, true);
+  assert.equal(stored?.expiresAt, expiresAt);
+  assert.equal(metadata?.tokenUsed, 20);
+  assert.equal(metadata?.maxRequestsPerDay, 25);
+});
+
+test("token limit rejects requests once counted usage reaches the limit", async () => {
+  await enableManagementAuth();
+  await createManagementKey();
+  const response = await listRoute.POST(
+    await makeManagementSessionRequest("http://localhost/api/keys", {
+      method: "POST",
+      body: { name: "Quota customer", tokenLimit: 5 },
+    })
+  );
+  const body = (await response.json()) as any;
+
+  apiKeysDb.incrementApiKeyTokenUsage(body.id, 5);
+
+  const result = await apiKeyPolicy.enforceApiKeyPolicy(
+    new Request("http://localhost/v1/chat/completions", {
+      headers: { authorization: `Bearer ${body.key}` },
+    }),
+    "gpt-test"
+  );
+
+  assert.equal(result.rejection?.status, 429);
 });
 
 test("POST /api/keys validates missing and oversized names", async () => {
@@ -174,6 +248,15 @@ test("GET /api/keys lists masked keys with pagination and GET /api/keys/[id] sta
   await createManagementKey();
   const createdA = await apiKeysDb.createApiKey("Alpha", MACHINE_ID);
   const createdB = await apiKeysDb.createApiKey("Beta", MACHINE_ID);
+  await usageHistory.saveRequestUsage({
+    apiKeyId: createdA.id,
+    apiKeyName: createdA.name,
+    provider: "codex",
+    model: "gpt-5.5",
+    status: "200",
+    success: true,
+    tokens: { input: 10, output: 5 },
+  });
 
   const listResponse = await listRoute.GET(
     await makeManagementSessionRequest("http://localhost/api/keys?limit=1&offset=1")
@@ -192,6 +275,14 @@ test("GET /api/keys lists masked keys with pagination and GET /api/keys/[id] sta
   assert.equal(listBody.keys[0].id, createdA.id);
   assert.notEqual(listBody.keys[0].key, createdA.key);
   assert.match(listBody.keys[0].key, /\*{4}/);
+  assert.deepEqual(
+    {
+      totalRequests: listBody.keys[0].usage.totalRequests,
+      todayRequests: listBody.keys[0].usage.todayRequests,
+      totalTokens: listBody.keys[0].usage.totalTokens,
+    },
+    { totalRequests: 1, todayRequests: 1, totalTokens: 15 }
+  );
 
   assert.equal(getResponse.status, 200);
   assert.equal(getBody.id, createdB.id);
@@ -364,6 +455,7 @@ test("GET /api/keys/[id] returns 404 for an unknown key and reveal is gated by t
     await makeManagementSessionRequest("http://localhost/api/keys/missing"),
     { params: Promise.resolve({ id: "missing" }) }
   );
+  process.env.ALLOW_API_KEY_REVEAL = "false";
   const revealDisabled = await revealRoute.GET(
     await makeManagementSessionRequest(`http://localhost/api/keys/${created.id}/reveal`),
     { params: Promise.resolve({ id: created.id }) }

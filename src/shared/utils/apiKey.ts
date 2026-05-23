@@ -53,6 +53,15 @@ export function generateApiKeyWithMachine(machineId: string): { key: string; key
 }
 
 /**
+ * Generate a commercial QRouter customer API key.
+ * Format: qrouter_sk_{high-entropy-token}
+ */
+export function generateQrouterApiKey(): { key: string; keyId: string } {
+  const keyId = crypto.randomBytes(24).toString("base64url");
+  return { key: `qrouter_sk_${keyId}`, keyId };
+}
+
+/**
  * Parse API key and extract machineId + keyId
  * Supports both formats:
  * - New: sk-{machineId}-{keyId}-{crc8}

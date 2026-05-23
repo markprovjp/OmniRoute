@@ -47,6 +47,10 @@ export interface ApiKeyMetadata {
   maxRequestsPerMinute?: number | null;
   maxSessions?: number | null;
   rateLimits?: RateLimitRule[] | null;
+  tokenLimit?: number | null;
+  dailyTokenLimit?: number | null;
+  hourlyTokenLimit?: number | null;
+  tokenUsed?: number | null;
 }
 
 /**
@@ -205,7 +209,19 @@ export async function enforceApiKeyPolicy(
     }
   }
 
-  // ── Check 2: access_schedule — time-based access window ──
+  // ── Check 2: Token quota ──
+  if (apiKeyInfo.tokenLimit && apiKeyInfo.tokenLimit > 0) {
+    const tokenUsed = typeof apiKeyInfo.tokenUsed === "number" ? apiKeyInfo.tokenUsed : 0;
+    if (tokenUsed >= apiKeyInfo.tokenLimit) {
+      return {
+        apiKey,
+        apiKeyInfo,
+        rejection: errorResponse(HTTP_STATUS.RATE_LIMITED, "API key token limit exceeded"),
+      };
+    }
+  }
+
+  // ── Check 3: access_schedule — time-based access window ──
   if (apiKeyInfo.accessSchedule && apiKeyInfo.accessSchedule.enabled) {
     if (!isWithinSchedule(apiKeyInfo.accessSchedule)) {
       const { from, until, tz } = apiKeyInfo.accessSchedule;
@@ -220,7 +236,7 @@ export async function enforceApiKeyPolicy(
     }
   }
 
-  // ── Check 3: Model restriction ──
+  // ── Check 4: Model restriction ──
   if (modelStr && apiKeyInfo.allowedModels && apiKeyInfo.allowedModels.length > 0) {
     const allowed = await isModelAllowedForKey(apiKey, modelStr);
     if (!allowed) {
@@ -235,7 +251,7 @@ export async function enforceApiKeyPolicy(
     }
   }
 
-  // ── Check 4: Budget limit ──
+  // ── Check 5: Budget limit ──
   if (apiKeyInfo.id) {
     try {
       const budgetOk = checkBudget(apiKeyInfo.id);
@@ -260,7 +276,7 @@ export async function enforceApiKeyPolicy(
     }
   }
 
-  // ── Check 5: Generic Multi-Window Rate Limits ──
+  // ── Check 6: Generic Multi-Window Rate Limits ──
   if (apiKeyInfo.id) {
     const rulesToApply =
       apiKeyInfo.rateLimits && apiKeyInfo.rateLimits.length > 0
