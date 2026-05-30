@@ -1,7 +1,15 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback, memo } from "react";
-import { Card, Button, Input, Modal, CardSkeleton, Toggle } from "@/shared/components";
+import { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
+import {
+  Card,
+  Button,
+  Input,
+  Modal,
+  ConfirmModal,
+  CardSkeleton,
+  Toggle,
+} from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useTranslations } from "next-intl";
 import { getProviderDisplayName } from "@/lib/display/names";
@@ -9,6 +17,7 @@ import { getProviderDisplayName } from "@/lib/display/names";
 // Constants for validation
 const MAX_KEY_NAME_LENGTH = 200;
 const MAX_SELECTED_MODELS = 500;
+const TOKEN_BUMP_PRESETS = [50_000_000, 100_000_000, 200_000_000, 500_000_000] as const;
 
 // Debounce hook for search optimization
 function useDebouncedValue<T>(value: T, delay: number): T {
@@ -40,6 +49,44 @@ function extendExpiryByDays(value: string | null | undefined, days: number): str
   const current = value ? new Date(value).getTime() : Number.NaN;
   const base = Number.isFinite(current) && current > Date.now() ? current : Date.now();
   return new Date(base + days * 86400_000).toISOString();
+}
+
+function formatCompactTokens(value: number): string {
+  if (value >= 1_000_000_000) return `${value / 1_000_000_000}B`;
+  if (value >= 1_000_000) return `${value / 1_000_000}M`;
+  if (value >= 1_000) return `${value / 1_000}K`;
+  return String(value);
+}
+
+function formatNumberInput(value: number): string {
+  return Number.isFinite(value) && value > 0 ? String(Math.floor(value)) : "";
+}
+
+function splitIsoDateTime(value: string | null | undefined): { date: string; time: string } {
+  if (!value) return { date: "", time: "" };
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return { date: "", time: "" };
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return {
+    date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    time: `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+  };
+}
+
+function combineLocalDateTime(dateValue: string, timeValue: string): string {
+  const date = dateValue.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return "";
+  const time = /^\d{2}:\d{2}$/.test(timeValue.trim()) ? timeValue.trim() : "23:59";
+  const parsed = new Date(`${date}T${time}:00`);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : "";
+}
+
+function addTokenAllowance(
+  currentLimit: number | null | undefined,
+  currentUsed: number,
+  amount: number
+): number {
+  return Math.max(currentLimit || 0, currentUsed || 0) + amount;
 }
 
 // Validate key name
@@ -160,6 +207,89 @@ interface QrouterUpstream {
 /** Tuple type for models grouped by provider: [providerName, models[]] */
 type ProviderGroup = [provider: string, models: Model[]];
 
+type PendingKeyAction = { type: "delete" | "regenerate"; key: ApiKey } | null;
+
+type ActionMenuItem = {
+  icon: string;
+  label: string;
+  tone?: "default" | "danger" | "success" | "warning";
+  disabled?: boolean;
+  onClick: () => void;
+};
+
+function ActionMenu({
+  isOpen,
+  onToggle,
+  onClose,
+  items,
+}: {
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  items: ActionMenuItem[];
+}) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [isOpen, onClose]);
+
+  return (
+    <div ref={menuRef} className="relative z-50 inline-flex justify-end">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-surface text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
+        aria-label="Open key actions"
+      >
+        <span className="material-symbols-outlined text-[20px]">more_horiz</span>
+      </button>
+      {isOpen && (
+        <div
+          role="menu"
+          className="absolute right-0 top-10 z-50 w-64 overflow-hidden rounded-lg border border-white/10 bg-[#0f141b] text-text-main shadow-2xl ring-1 ring-black/40"
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              onClick={() => {
+                item.onClick();
+                onClose();
+              }}
+              className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                item.tone === "danger"
+                  ? "text-red-500 hover:bg-red-500/10"
+                  : item.tone === "success"
+                    ? "text-emerald-600 hover:bg-emerald-500/10"
+                    : item.tone === "warning"
+                      ? "text-amber-600 hover:bg-amber-500/10"
+                      : "text-text-main hover:bg-white/5"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[18px]">{item.icon}</span>
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ApiManagerPageClient() {
   const t = useTranslations("apiManager");
   const tc = useTranslations("common");
@@ -181,18 +311,21 @@ export default function ApiManagerPageClient() {
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [searchModel, setSearchModel] = useState("");
   const [pageError, setPageError] = useState<string | null>(null);
+  const [pageNotice, setPageNotice] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [usageStats, setUsageStats] = useState<Record<string, KeyUsageStats>>({});
   const [sessionCounts, setSessionCounts] = useState<Record<string, number>>({});
-  const [allowKeyReveal, setAllowKeyReveal] = useState(false);
   const [qrouterUpstream, setQrouterUpstream] = useState<QrouterUpstream | null>(null);
   const [upstreamApiKeys, setUpstreamApiKeys] = useState("");
   const [upstreamError, setUpstreamError] = useState<string | null>(null);
   const [upstreamSaving, setUpstreamSaving] = useState(false);
   const [keySearch, setKeySearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<KeyStatusFilter>("all");
+  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+  const [pendingKeyAction, setPendingKeyAction] = useState<PendingKeyAction>(null);
+  const [testingKeyId, setTestingKeyId] = useState<string | null>(null);
 
   const { copied, copy } = useCopyToClipboard();
   const maxApiKeyRequests = useMemo(() => {
@@ -264,7 +397,6 @@ export default function ApiManagerPageClient() {
         const data = await res.json();
         const loadedKeys: ApiKey[] = data.keys || [];
         setKeys(loadedKeys);
-        setAllowKeyReveal(data.allowKeyReveal === true);
         setUsageStats(
           Object.fromEntries(
             loadedKeys.map((key) => [
@@ -325,6 +457,7 @@ export default function ApiManagerPageClient() {
   };
 
   const clearPageError = useCallback(() => setPageError(null), []);
+  const clearPageNotice = useCallback(() => setPageNotice(null), []);
 
   const handleSaveQrouterUpstream = async () => {
     const apiKeys = upstreamApiKeys
@@ -425,8 +558,6 @@ export default function ApiManagerPageClient() {
       return;
     }
 
-    if (!confirm(t("deleteConfirm"))) return;
-
     setIsSubmitting(true);
     clearPageError();
 
@@ -448,7 +579,6 @@ export default function ApiManagerPageClient() {
 
   const handleRegenerateKey = async (id: string) => {
     if (!id) return;
-    if (!confirm(t("regenerateConfirm"))) return;
 
     setIsSubmitting(true);
     clearPageError();
@@ -468,6 +598,18 @@ export default function ApiManagerPageClient() {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleConfirmPendingAction = async () => {
+    if (!pendingKeyAction) return;
+
+    const action = pendingKeyAction;
+    if (action.type === "delete") {
+      await handleDeleteKey(action.key.id);
+    } else {
+      await handleRegenerateKey(action.key.id);
+    }
+    setPendingKeyAction(null);
   };
 
   const patchKeySettings = async (key: ApiKey, payload: Record<string, unknown>) => {
@@ -504,19 +646,65 @@ export default function ApiManagerPageClient() {
   const handleCopyExistingKey = async (keyId: string) => {
     if (!keyId) return;
 
+    clearPageError();
+    clearPageNotice();
     try {
       const res = await fetch(`/api/keys/${encodeURIComponent(keyId)}/reveal`);
       if (!res.ok) {
-        console.log("Error revealing key:", await res.text());
+        const data = await res.json().catch(() => null);
+        setPageError(data?.error || "Cannot reveal this key for copying.");
         return;
       }
 
       const data = await res.json();
       if (typeof data?.key === "string") {
-        await copy(data.key, `existing_key_${keyId}`);
+        const copiedOk = await copy(data.key, `existing_key_${keyId}`);
+        if (!copiedOk) setPageError("Clipboard copy failed. Try again from a secure browser tab.");
       }
     } catch (error) {
       console.log("Error copying existing key:", error);
+      setPageError("Cannot copy this key right now.");
+    }
+  };
+
+  const revealKeyForAction = async (keyId: string): Promise<string | null> => {
+    const res = await fetch(`/api/keys/${encodeURIComponent(keyId)}/reveal`);
+    const data = await res.json().catch(() => null);
+    if (!res.ok || typeof data?.key !== "string") {
+      setPageError(data?.error || "Cannot reveal this key.");
+      return null;
+    }
+    return data.key;
+  };
+
+  const handleTestExistingKey = async (key: ApiKey) => {
+    if (!key?.id) return;
+
+    setTestingKeyId(key.id);
+    clearPageError();
+    clearPageNotice();
+    try {
+      const revealedKey = await revealKeyForAction(key.id);
+      if (!revealedKey) return;
+
+      const res = await fetch("/v1/models", {
+        headers: {
+          Authorization: `Bearer ${revealedKey}`,
+        },
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setPageError(data?.error?.message || data?.error || `Key test failed with ${res.status}.`);
+        return;
+      }
+
+      const modelCount = Array.isArray(data?.data) ? data.data.length : 0;
+      setPageNotice(`Key "${key.name}" works. /v1/models returned ${modelCount} models.`);
+    } catch (error) {
+      console.log("Error testing existing key:", error);
+      setPageError("Cannot test this key right now.");
+    } finally {
+      setTestingKeyId(null);
     }
   };
 
@@ -695,6 +883,7 @@ export default function ApiManagerPageClient() {
       }
     );
   }, [keys, usageStats]);
+  const newExpiryDateTime = splitIsoDateTime(newExpiresAt);
 
   if (loading) {
     return (
@@ -715,6 +904,19 @@ export default function ApiManagerPageClient() {
           <button
             onClick={clearPageError}
             className="text-red-500 hover:text-red-700 transition-colors"
+          >
+            <span className="material-symbols-outlined">close</span>
+          </button>
+        </div>
+      )}
+
+      {pageNotice && (
+        <div className="flex items-center gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4">
+          <span className="material-symbols-outlined text-emerald-500">check_circle</span>
+          <p className="flex-1 text-sm text-emerald-700 dark:text-emerald-300">{pageNotice}</p>
+          <button
+            onClick={clearPageNotice}
+            className="text-emerald-500 transition-colors hover:text-emerald-700"
           >
             <span className="material-symbols-outlined">close</span>
           </button>
@@ -820,12 +1022,19 @@ export default function ApiManagerPageClient() {
           </div>
           <div className="flex flex-wrap items-center gap-3 sm:justify-end">
             {qrouterUpstream && (
-              <Toggle
-                checked={qrouterUpstream.isActive === false}
-                onChange={handleToggleQrouterUpstream}
-                label="System Routing"
-                size="sm"
-              />
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-surface/40 px-3 py-2">
+                <Toggle
+                  checked={qrouterUpstream.isActive === false}
+                  onChange={handleToggleQrouterUpstream}
+                  label="System Routing"
+                  size="sm"
+                />
+                <span className="text-[11px] text-text-muted">
+                  {qrouterUpstream.isActive === false
+                    ? "system keys"
+                    : `${qrouterUpstream.keyCount} external key${qrouterUpstream.keyCount === 1 ? "" : "s"}`}
+                </span>
+              </div>
             )}
             <Button
               icon="add"
@@ -898,7 +1107,7 @@ export default function ApiManagerPageClient() {
             </Button>
           </div>
         ) : (
-          <div className="flex flex-col border border-border rounded-lg overflow-hidden">
+          <div className="flex flex-col gap-3 overflow-visible lg:gap-0 lg:rounded-lg lg:border lg:border-border">
             {/* Table Header */}
             <div className="hidden lg:grid grid-cols-12 gap-4 px-4 py-3 bg-surface/50 border-b border-border text-xs font-semibold text-text-muted uppercase tracking-wider">
               <div className="col-span-2">{t("name")}</div>
@@ -951,9 +1160,11 @@ export default function ApiManagerPageClient() {
               return (
                 <div
                   key={key.id}
-                  className="grid grid-cols-1 gap-3 px-4 py-4 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0 hover:bg-surface/30 transition-colors group lg:grid-cols-12 lg:gap-4 lg:py-3"
+                  className={`relative grid grid-cols-1 gap-4 rounded-lg border border-border bg-background/90 p-4 shadow-sm transition-colors hover:bg-surface/25 lg:grid-cols-12 lg:gap-4 lg:rounded-none lg:border-x-0 lg:border-t-0 lg:bg-transparent lg:px-4 lg:py-3 lg:shadow-none lg:last:border-b-0 ${
+                    openActionMenuId === key.id ? "z-40" : "z-0"
+                  }`}
                 >
-                  <div className="flex items-center gap-2 lg:col-span-2">
+                  <div className="flex items-start gap-2 lg:col-span-2 lg:items-center">
                     <span
                       className={`material-symbols-outlined text-sm ${isRestricted ? "text-amber-500" : "text-emerald-500"}`}
                     >
@@ -980,27 +1191,25 @@ export default function ApiManagerPageClient() {
                       </span>
                     </div>
                   </div>
-                  <div className="flex min-w-0 items-center gap-1.5 lg:col-span-2">
-                    <code className="text-sm text-text-muted font-mono truncate">{key.key}</code>
-                    {allowKeyReveal ? (
+                  <div className="flex min-w-0 flex-col gap-1 lg:col-span-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-text-muted lg:hidden">
+                      {t("key")}
+                    </span>
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <code className="min-w-0 truncate font-mono text-sm text-text-muted">
+                        {key.key}
+                      </code>
                       <button
                         onClick={() => handleCopyExistingKey(key.id)}
-                        className="p-1 text-text-muted/60 hover:text-primary transition-colors shrink-0"
+                        className="shrink-0 rounded-md p-1 text-text-muted/70 transition-colors hover:bg-primary/10 hover:text-primary"
                         title={tc("copy")}
                         aria-label={tc("copy")}
                       >
-                        <span className="material-symbols-outlined text-[14px]">
+                        <span className="material-symbols-outlined text-[15px]">
                           {copied === `existing_key_${key.id}` ? "check" : "content_copy"}
                         </span>
                       </button>
-                    ) : (
-                      <span
-                        className="p-1 text-text-muted/40 opacity-100 transition-all shrink-0 cursor-help lg:opacity-0 lg:group-hover:opacity-100"
-                        title={t("keyOnlyAvailableAtCreation")}
-                      >
-                        <span className="material-symbols-outlined text-[14px]">lock</span>
-                      </span>
-                    )}
+                    </div>
                   </div>
                   <div className="flex items-center lg:col-span-2">
                     <div className="flex flex-col items-start gap-1">
@@ -1203,49 +1412,60 @@ export default function ApiManagerPageClient() {
                     )}
                   </div>
                   <div className="flex flex-col justify-center text-sm text-text-muted lg:col-span-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-text-muted lg:hidden">
+                      {t("created")}
+                    </span>
                     <span>{new Date(key.createdAt).toLocaleDateString()}</span>
                   </div>
-                  <div className="flex flex-wrap items-center justify-start gap-1 lg:col-span-2 lg:justify-end">
-                    <button
-                      onClick={() => handleCopyExistingKey(key.id)}
-                      className="p-2 hover:bg-primary/10 rounded text-text-muted hover:text-primary opacity-100 transition-all lg:opacity-0 lg:group-hover:opacity-100"
-                      title={tc("copy")}
-                      aria-label={tc("copy")}
-                    >
-                      <span className="material-symbols-outlined text-[18px]">
-                        {copied === `existing_key_${key.id}` ? "check" : "content_copy"}
-                      </span>
-                    </button>
-                    <button
-                      onClick={() => handleToggleKey(key)}
-                      className={`p-2 rounded opacity-100 transition-all lg:opacity-0 lg:group-hover:opacity-100 ${keyIsActive ? "text-text-muted hover:text-red-500 hover:bg-red-500/10" : "text-emerald-600 hover:bg-emerald-500/10"}`}
-                      title={keyIsActive ? "Disable key" : "Enable key"}
-                    >
-                      <span className="material-symbols-outlined text-[18px]">
-                        {keyIsActive ? "pause_circle" : "play_circle"}
-                      </span>
-                    </button>
-                    <button
-                      onClick={() => handleRegenerateKey(key.id)}
-                      className="p-2 hover:bg-amber-500/10 rounded text-text-muted hover:text-amber-500 opacity-100 transition-all lg:opacity-0 lg:group-hover:opacity-100"
-                      title={t("regenerateKey")}
-                    >
-                      <span className="material-symbols-outlined text-[18px]">refresh</span>
-                    </button>
-                    <button
-                      onClick={() => handleOpenPermissions(key)}
-                      className="p-2 hover:bg-primary/10 rounded text-text-muted hover:text-primary opacity-100 transition-all lg:opacity-0 lg:group-hover:opacity-100"
-                      title={t("editPermissions")}
-                    >
-                      <span className="material-symbols-outlined text-[18px]">tune</span>
-                    </button>
-                    <button
-                      onClick={() => handleDeleteKey(key.id)}
-                      className="p-2 hover:bg-red-500/10 rounded text-red-500 opacity-100 transition-all lg:opacity-0 lg:group-hover:opacity-100"
-                      title={t("deleteKey")}
-                    >
-                      <span className="material-symbols-outlined text-[18px]">delete</span>
-                    </button>
+                  <div className="flex items-center justify-end lg:col-span-2">
+                    <ActionMenu
+                      isOpen={openActionMenuId === key.id}
+                      onToggle={() =>
+                        setOpenActionMenuId((current) => (current === key.id ? null : key.id))
+                      }
+                      onClose={() => setOpenActionMenuId(null)}
+                      items={[
+                        {
+                          icon: copied === `existing_key_${key.id}` ? "check" : "content_copy",
+                          label: copied === `existing_key_${key.id}` ? tc("copied") : tc("copy"),
+                          onClick: () => handleCopyExistingKey(key.id),
+                        },
+                        {
+                          icon: testingKeyId === key.id ? "progress_activity" : "network_check",
+                          label: testingKeyId === key.id ? "Testing key..." : "Test key",
+                          disabled: testingKeyId === key.id,
+                          onClick: () => handleTestExistingKey(key),
+                        },
+                        {
+                          icon: keyIsActive ? "pause_circle" : "play_circle",
+                          label: keyIsActive ? "Disable key" : "Enable key",
+                          tone: keyIsActive ? "warning" : "success",
+                          onClick: () => handleToggleKey(key),
+                        },
+                        {
+                          icon: "add_circle",
+                          label: "Add tokens / quota",
+                          onClick: () => handleOpenPermissions(key),
+                        },
+                        {
+                          icon: "tune",
+                          label: t("editPermissions"),
+                          onClick: () => handleOpenPermissions(key),
+                        },
+                        {
+                          icon: "refresh",
+                          label: t("regenerateKey"),
+                          tone: "warning",
+                          onClick: () => setPendingKeyAction({ type: "regenerate", key }),
+                        },
+                        {
+                          icon: "delete",
+                          label: t("deleteKey"),
+                          tone: "danger",
+                          onClick: () => setPendingKeyAction({ type: "delete", key }),
+                        },
+                      ]}
+                    />
                   </div>
                 </div>
               );
@@ -1257,6 +1477,7 @@ export default function ApiManagerPageClient() {
       <Modal
         isOpen={showAddModal}
         title={t("createKey")}
+        size="full"
         onClose={() => {
           setShowAddModal(false);
           setNewKeyName("");
@@ -1271,7 +1492,7 @@ export default function ApiManagerPageClient() {
           setCreateError(null);
         }}
       >
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-5">
           <div>
             <label className="text-sm font-medium text-text-main mb-1.5 block">
               {t("keyName")}
@@ -1289,7 +1510,7 @@ export default function ApiManagerPageClient() {
             />
             <p className="text-xs text-text-muted mt-1.5">{t("keyNameDesc")}</p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="text-sm font-medium text-text-main mb-1.5 block">
                 Customer name
@@ -1301,7 +1522,7 @@ export default function ApiManagerPageClient() {
                 maxLength={MAX_KEY_NAME_LENGTH}
               />
             </div>
-            <div>
+            <div className="sm:row-span-2">
               <label className="text-sm font-medium text-text-main mb-1.5 block">
                 Lifetime tokens
               </label>
@@ -1311,6 +1532,21 @@ export default function ApiManagerPageClient() {
                 placeholder="Unlimited"
                 inputMode="numeric"
               />
+              <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                {TOKEN_BUMP_PRESETS.map((amount) => (
+                  <button
+                    key={amount}
+                    type="button"
+                    onClick={() => setNewTokenLimit(formatNumberInput(amount))}
+                    className="rounded-md border border-border px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
+                  >
+                    {formatCompactTokens(amount)}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-xs text-text-muted">
+                Presets create paid quota immediately; leave empty for unlimited.
+              </p>
             </div>
             <div>
               <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/day</label>
@@ -1320,6 +1556,18 @@ export default function ApiManagerPageClient() {
                 placeholder="Unlimited"
                 inputMode="numeric"
               />
+              <div className="mt-2 grid grid-cols-2 gap-1.5">
+                {[50_000_000, 100_000_000].map((amount) => (
+                  <button
+                    key={amount}
+                    type="button"
+                    onClick={() => setNewDailyTokenLimit(formatNumberInput(amount))}
+                    className="rounded-md border border-border px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
+                  >
+                    {formatCompactTokens(amount)}/day
+                  </button>
+                ))}
+              </div>
             </div>
             <div>
               <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/hour</label>
@@ -1352,17 +1600,51 @@ export default function ApiManagerPageClient() {
               className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background text-text-main"
             />
           </div>
-          <div className="flex flex-col gap-2">
-            <label className="text-sm font-medium text-text-main">Expiry</label>
-            <input
-              type="datetime-local"
-              value={newExpiresAt ? newExpiresAt.slice(0, 16) : ""}
-              onChange={(e) => {
-                const value = e.target.value;
-                setNewExpiresAt(value ? new Date(value).toISOString() : "");
-              }}
-              className="w-full px-2 py-1.5 text-sm border border-border rounded-md bg-background text-text-main"
-            />
+          <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface/40 p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <label className="text-sm font-medium text-text-main">Expiry</label>
+                <p className="text-xs text-text-muted">Optional. Blank keys do not expire.</p>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {[7, 30, 90].map((days) => (
+                  <button
+                    key={days}
+                    type="button"
+                    onClick={() => setNewExpiresAt(extendExpiryByDays(newExpiresAt, days))}
+                    className="rounded-md border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
+                  >
+                    +{days}d
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setNewExpiresAt("")}
+                  className="rounded-md border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-red-500/40 hover:text-red-500"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input
+                type="date"
+                value={newExpiryDateTime.date}
+                onChange={(e) =>
+                  setNewExpiresAt(combineLocalDateTime(e.target.value, newExpiryDateTime.time))
+                }
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-text-main"
+              />
+              <input
+                type="time"
+                value={newExpiryDateTime.time}
+                onChange={(e) =>
+                  setNewExpiresAt(combineLocalDateTime(newExpiryDateTime.date, e.target.value))
+                }
+                disabled={!newExpiryDateTime.date}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-text-main disabled:opacity-50"
+              />
+            </div>
           </div>
           {createError && (
             <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30">
@@ -1370,7 +1652,7 @@ export default function ApiManagerPageClient() {
               <p className="text-sm text-red-700 dark:text-red-300 flex-1">{createError}</p>
             </div>
           )}
-          <div className="flex gap-2">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row">
             <Button
               onClick={() => {
                 setShowAddModal(false);
@@ -1433,6 +1715,18 @@ export default function ApiManagerPageClient() {
           </Button>
         </div>
       </Modal>
+
+      <ConfirmModal
+        isOpen={pendingKeyAction !== null}
+        onClose={() => setPendingKeyAction(null)}
+        onConfirm={handleConfirmPendingAction}
+        title={pendingKeyAction?.type === "delete" ? t("deleteKey") : t("regenerateKey")}
+        message={pendingKeyAction?.type === "delete" ? t("deleteConfirm") : t("regenerateConfirm")}
+        confirmText={pendingKeyAction?.type === "delete" ? t("deleteKey") : t("regenerateKey")}
+        cancelText={tc("cancel")}
+        variant={pendingKeyAction?.type === "delete" ? "danger" : "primary"}
+        loading={isSubmitting}
+      />
 
       {/* Permissions Modal */}
       {editingKey && (
@@ -1724,21 +2018,30 @@ const PermissionsModal = memo(function PermissionsModal({
 
   const selectedCount = selectedModels.length;
   const totalModels = allModels.length;
+  const totalTokenUsed = Math.max(apiKey.tokenUsed ?? 0, apiKey.usage?.totalTokens ?? 0);
+  const dayTokenUsed =
+    (apiKey.quota?.day?.usedTokens ?? apiKey.usage?.todayTokens ?? 0) +
+    (apiKey.quota?.day?.reservedTokens ?? 0);
+  const hourTokenUsed =
+    (apiKey.quota?.hour?.usedTokens ?? apiKey.usage?.hourTokens ?? 0) +
+    (apiKey.quota?.hour?.reservedTokens ?? 0);
+  const expiryDateTime = splitIsoDateTime(expiresAt);
 
   return (
     <Modal
       isOpen={onClose ? isOpen : false}
       title={t("permissionsTitle", { name: apiKey?.name || "" })}
       onClose={onClose}
+      size="full"
     >
       <div className="flex flex-col gap-4">
         {/* Key Name */}
-        <div className="flex items-start justify-between gap-3 p-3 rounded-lg border border-border bg-surface/40">
-          <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface/40 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-text-main">{t("keyName")}</p>
-            <p className="text-xs text-text-muted">{t("keyNameDesc")}</p>
+            <p className="mt-1 text-xs text-text-muted">{t("keyNameDesc")}</p>
           </div>
-          <div className="w-48 shrink-0">
+          <div className="w-full sm:w-72 sm:shrink-0">
             <Input
               value={keyName}
               onChange={(e) => {
@@ -1761,7 +2064,7 @@ const PermissionsModal = memo(function PermissionsModal({
         )}
 
         {/* Access Mode Toggle */}
-        <div className="flex gap-2 p-1 bg-surface rounded-lg">
+        <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface p-1">
           <button
             onClick={handleSelectAll}
             className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-all ${
@@ -1811,8 +2114,8 @@ const PermissionsModal = memo(function PermissionsModal({
         </div>
 
         {/* Key Active Toggle */}
-        <div className="flex items-start justify-between gap-3 p-3 rounded-lg border border-border bg-surface/40">
-          <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface/40 p-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-text-main">{t("keyActive")}</p>
             <p className="text-xs text-text-muted">{t("keyActiveDesc")}</p>
           </div>
@@ -1835,14 +2138,14 @@ const PermissionsModal = memo(function PermissionsModal({
         </div>
 
         {/* Max Sessions Limit (T08) */}
-        <div className="flex items-start justify-between gap-3 p-3 rounded-lg border border-border bg-surface/40">
-          <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface/40 p-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-text-main">{t("maxActiveSessions")}</p>
             <p className="text-xs text-text-muted">
               0 = unlimited. Return 429 when this key exceeds concurrent sticky sessions.
             </p>
           </div>
-          <div className="w-32">
+          <div className="w-full sm:w-32 sm:shrink-0">
             <Input
               type="number"
               min={0}
@@ -1858,8 +2161,8 @@ const PermissionsModal = memo(function PermissionsModal({
 
         {/* Custom Rate Limits */}
         <div className="flex flex-col gap-2 p-3 rounded-lg border border-border bg-surface/40">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-text-main">
                 {t("apiManagerCustomRateLimits")}
               </p>
@@ -1868,7 +2171,7 @@ const PermissionsModal = memo(function PermissionsModal({
             <button
               type="button"
               onClick={() => setRateLimits((prev) => [...prev, { limit: 100, window: 60 }])}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold bg-primary/10 text-primary hover:bg-primary/20 transition-colors shrink-0"
+              className="inline-flex w-fit items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/20 sm:shrink-0"
             >
               <span className="material-symbols-outlined text-[14px]">add</span>
               Add Limit
@@ -1877,7 +2180,10 @@ const PermissionsModal = memo(function PermissionsModal({
           {rateLimits.length > 0 && (
             <div className="flex flex-col gap-2 pt-2">
               {rateLimits.map((rl, index) => (
-                <div key={index} className="flex gap-2 items-center">
+                <div
+                  key={index}
+                  className="grid gap-2 sm:grid-cols-[1fr_auto_1fr_auto_auto] sm:items-center"
+                >
                   <Input
                     type="number"
                     min={1}
@@ -1926,8 +2232,8 @@ const PermissionsModal = memo(function PermissionsModal({
 
         {/* Access Schedule */}
         <div className="flex flex-col gap-2 p-3 rounded-lg border border-border bg-surface/40">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-text-main">{t("accessSchedule")}</p>
               <p className="text-xs text-text-muted">{t("accessScheduleDesc")}</p>
             </div>
@@ -2024,8 +2330,8 @@ const PermissionsModal = memo(function PermissionsModal({
         </div>
 
         {/* Privacy Toggle */}
-        <div className="flex items-start justify-between gap-3 p-3 rounded-lg border border-border bg-surface/40">
-          <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface/40 p-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-text-main">{t("noLogPayloadPrivacy")}</p>
             <p className="text-xs text-text-muted">
               Disable request/response payload persistence for this API key.
@@ -2050,8 +2356,8 @@ const PermissionsModal = memo(function PermissionsModal({
         </div>
 
         {/* Auto-Resolve Toggle */}
-        <div className="flex items-start justify-between gap-3 p-3 rounded-lg border border-border bg-surface/40">
-          <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface/40 p-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-text-main">{t("autoResolve")}</p>
             <p className="text-xs text-text-muted">{t("autoResolveDesc")}</p>
           </div>
@@ -2074,8 +2380,8 @@ const PermissionsModal = memo(function PermissionsModal({
         </div>
 
         {/* Ban Toggle (SECURITY) */}
-        <div className="flex items-start justify-between gap-3 p-3 rounded-lg border border-red-500/20 bg-red-500/5">
-          <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-3 rounded-lg border border-red-500/20 bg-red-500/5 p-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-bold text-red-700 dark:text-red-400">{t("bannedStatus")}</p>
             <p className="text-xs text-red-600 dark:text-red-300">
               Immediately revoke all access. Used for suspected abuse or compromised keys.
@@ -2119,8 +2425,26 @@ const PermissionsModal = memo(function PermissionsModal({
               inputMode="numeric"
             />
             <p className="text-xs text-text-muted mt-1">
-              Used: {(apiKey.tokenUsed ?? 0).toLocaleString()} tokens
+              Used: {totalTokenUsed.toLocaleString()} tokens
             </p>
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              {TOKEN_BUMP_PRESETS.map((amount) => (
+                <button
+                  key={amount}
+                  type="button"
+                  onClick={() =>
+                    setTokenLimit(
+                      formatNumberInput(
+                        addTokenAllowance(Number(tokenLimit || 0), totalTokenUsed, amount)
+                      )
+                    )
+                  }
+                  className="rounded-md border border-border px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
+                >
+                  +{formatCompactTokens(amount)}
+                </button>
+              ))}
+            </div>
           </div>
           <div>
             <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/day</label>
@@ -2130,7 +2454,27 @@ const PermissionsModal = memo(function PermissionsModal({
               placeholder="Unlimited"
               inputMode="numeric"
             />
-            <p className="text-xs text-text-muted mt-1">Reserved before upstream call.</p>
+            <p className="text-xs text-text-muted mt-1">
+              Used today: {dayTokenUsed.toLocaleString()} tokens.
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              {[50_000_000, 100_000_000].map((amount) => (
+                <button
+                  key={amount}
+                  type="button"
+                  onClick={() =>
+                    setDailyTokenLimit(
+                      formatNumberInput(
+                        addTokenAllowance(Number(dailyTokenLimit || 0), dayTokenUsed, amount)
+                      )
+                    )
+                  }
+                  className="rounded-md border border-border px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
+                >
+                  +{formatCompactTokens(amount)}
+                </button>
+              ))}
+            </div>
           </div>
           <div>
             <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/hour</label>
@@ -2140,7 +2484,9 @@ const PermissionsModal = memo(function PermissionsModal({
               placeholder="Unlimited"
               inputMode="numeric"
             />
-            <p className="text-xs text-text-muted mt-1">Optional burst guard.</p>
+            <p className="text-xs text-text-muted mt-1">
+              Used this hour: {hourTokenUsed.toLocaleString()} tokens.
+            </p>
           </div>
           <div>
             <label className="text-sm font-medium text-text-main mb-1.5 block">Requests/day</label>
@@ -2186,15 +2532,32 @@ const PermissionsModal = memo(function PermissionsModal({
               ))}
             </div>
           </div>
-          <input
-            type="datetime-local"
-            value={expiresAt ? expiresAt.slice(0, 16) : ""}
-            onChange={(e) => {
-              const val = e.target.value;
-              setExpiresAt(val ? new Date(val).toISOString() : "");
-            }}
-            className="w-full px-2 py-1.5 text-sm border border-border rounded-md bg-background text-text-main"
-          />
+          <div className="grid gap-2 sm:grid-cols-2">
+            <input
+              type="date"
+              value={expiryDateTime.date}
+              onChange={(e) =>
+                setExpiresAt(combineLocalDateTime(e.target.value, expiryDateTime.time))
+              }
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-text-main"
+            />
+            <input
+              type="time"
+              value={expiryDateTime.time}
+              onChange={(e) =>
+                setExpiresAt(combineLocalDateTime(expiryDateTime.date, e.target.value))
+              }
+              disabled={!expiryDateTime.date}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-text-main disabled:opacity-50"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setExpiresAt("")}
+            className="w-fit rounded-md border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-red-500/40 hover:text-red-500"
+          >
+            Clear expiry
+          </button>
         </div>
         {/* Management Access */}
         <div className="flex flex-col gap-2 p-3 rounded-lg border border-border bg-surface/40">
@@ -2282,7 +2645,7 @@ const PermissionsModal = memo(function PermissionsModal({
               )}
             </div>
 
-            <div className="max-h-[280px] overflow-y-auto border border-border rounded-lg divide-y divide-border">
+            <div className="max-h-[min(42vh,420px)] overflow-y-auto rounded-lg border border-border divide-y divide-border">
               {modelsByProvider.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-6 text-text-muted">
                   <span className="material-symbols-outlined text-2xl mb-1">search_off</span>
@@ -2300,7 +2663,7 @@ const PermissionsModal = memo(function PermissionsModal({
                     <div key={provider} className="group">
                       <button
                         onClick={() => handleToggleExpand(provider)}
-                        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface/50 transition-colors text-left"
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface/50"
                       >
                         <span
                           className={`material-symbols-outlined text-base transition-transform duration-200 ${
@@ -2309,7 +2672,7 @@ const PermissionsModal = memo(function PermissionsModal({
                         >
                           chevron_right
                         </span>
-                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <div className="flex min-w-0 flex-1 items-center gap-2">
                           <div
                             className="relative flex items-center cursor-pointer shrink-0"
                             onClick={(e) => {
@@ -2338,7 +2701,7 @@ const PermissionsModal = memo(function PermissionsModal({
                               )}
                             </div>
                           </div>
-                          <span className="text-xs font-semibold text-text-main truncate">
+                          <span className="min-w-0 truncate text-xs font-semibold text-text-main">
                             {provider}
                           </span>
                           <span className="text-[10px] text-text-muted bg-surface px-1 py-0.5 rounded shrink-0">
@@ -2354,15 +2717,15 @@ const PermissionsModal = memo(function PermissionsModal({
 
                       {/* Expandable model list */}
                       {expandedProviders.has(provider) && (
-                        <div className="px-3 pb-2 pl-9">
-                          <div className="flex flex-wrap gap-1">
+                        <div className="px-3 pb-2 sm:pl-9">
+                          <div className="grid grid-cols-1 gap-1 sm:flex sm:flex-wrap">
                             {models.map((model) => {
                               const isSelected = selectedModels.includes(model.id);
                               return (
                                 <button
                                   key={model.id}
                                   onClick={() => handleToggleModel(model.id)}
-                                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-mono transition-all ${
+                                  className={`min-w-0 truncate rounded-md px-2 py-1 text-left font-mono text-[10px] transition-all sm:inline-flex sm:max-w-[240px] ${
                                     isSelected
                                       ? "bg-primary text-white"
                                       : "bg-surface border border-border text-text-muted hover:border-primary/50 hover:text-text-main"

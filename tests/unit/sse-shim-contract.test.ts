@@ -25,7 +25,9 @@ function listProjectFiles(relativePath: string): string[] {
   });
 }
 
-test.after(() => {
+test.after(async () => {
+  const { closeDbInstance } = await import("../../src/lib/db/core.ts");
+  closeDbInstance();
   rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
 
@@ -44,6 +46,25 @@ test("src/sse model shim keeps parseModel behavior aligned with open-sse core", 
   for (const sample of samples) {
     assert.deepEqual(srcModel.parseModel(sample), coreModel.parseModel(sample));
   }
+});
+
+test("src/sse model resolver keeps built-in aliases ahead of custom provider nodes", async () => {
+  const { createProviderNode } = await import("@/lib/localDb");
+  await createProviderNode({
+    id: "openai-compatible-responses-test-cx",
+    type: "openai-compatible",
+    name: "Custom CX",
+    prefix: "cx",
+    apiType: "responses",
+    baseUrl: "https://example.test/v1",
+  });
+
+  const srcModel = await import("../../src/sse/services/model.ts");
+  assert.deepEqual(await srcModel.getModelInfo("cx/gpt-5.5"), {
+    provider: "codex",
+    model: "gpt-5.5",
+    extendedContext: false,
+  });
 });
 
 test("src/sse service wrappers delegate to open-sse and shared infrastructure", () => {

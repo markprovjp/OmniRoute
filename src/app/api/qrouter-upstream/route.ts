@@ -14,7 +14,7 @@ import { OPENAI_COMPATIBLE_PREFIX } from "@/shared/constants/providers";
 import { generateId } from "@/shared/utils";
 
 const DEFAULT_PROVIDER_NAME = "9Router";
-const DEFAULT_PREFIX = "cx";
+const DEFAULT_PREFIX = "qrouter";
 const DEFAULT_BASE_URL = "https://shopapikey.com/v1";
 const DEFAULT_MODEL_ID = "gpt-5.5";
 const DEFAULT_API_TYPE = "responses";
@@ -35,7 +35,7 @@ const qrouterUpstreamSchema = z.object({
     .trim()
     .min(1)
     .max(200)
-    .transform((value) => value.replace(/^cx\//i, ""))
+    .transform((value) => value.replace(/^[a-z][a-z0-9_-]*\//i, ""))
     .default(DEFAULT_MODEL_ID),
   apiKeys: z.array(z.string().trim().min(1).max(10000)).min(1).max(200),
 });

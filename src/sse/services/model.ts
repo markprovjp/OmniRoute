@@ -10,6 +10,7 @@ import { getCachedSettings } from "@/lib/localDb";
 import { getComboStepTarget } from "@/lib/combos/steps";
 import {
   parseModel,
+  resolveProviderAlias,
   resolveModelAliasFromMap,
   getModelInfoCore,
 } from "@omniroute/open-sse/services/model.ts";
@@ -100,6 +101,15 @@ export async function getModelInfo(modelStr) {
   if (parsed.providerAlias || parsed.provider) {
     // Ensure prefixToCheck is always a concise identifier, not a full model string
     const prefixToCheck = parsed.providerAlias || parsed.provider;
+
+    // Built-in provider aliases (for example cx/gpt-5.5 -> codex/gpt-5.5)
+    // must win over custom provider_nodes that reuse the same short prefix.
+    if (
+      parsed.providerAlias &&
+      resolveProviderAlias(parsed.providerAlias) !== parsed.providerAlias
+    ) {
+      return await attachCustomApiFormat(await getModelInfoCore(modelStr, null));
+    }
 
     // Check OpenAI Compatible nodes
     const openaiNodes = await getProviderNodes({ type: "openai-compatible" });

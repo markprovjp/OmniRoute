@@ -39,6 +39,12 @@ const bootstrappedEnv = bootstrapEnv();
 const runtimePorts = resolveRuntimePorts(bootstrappedEnv);
 const mergedEnv = withRuntimePortEnv(bootstrappedEnv, runtimePorts);
 
+if (dev) {
+  // `npm run dev` must not inherit NODE_ENV=production from .env. Next's dev
+  // runtime uses NODE_ENV to choose route handling behavior.
+  mergedEnv.NODE_ENV = "development";
+}
+
 for (const [key, value] of Object.entries(mergedEnv)) {
   if (value !== undefined) {
     process.env[key] = value;

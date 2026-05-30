@@ -328,6 +328,77 @@ function buildOpenAIResponsesSSE({
   );
 }
 
+function buildOpenAIResponsesFunctionCallSSE({
+  model = "gpt-5.5",
+  itemId = "fc_apply_patch",
+  callId = "call_apply_patch",
+  name = "apply_patch",
+  argumentsJson = '{"command":"*** Begin Patch\\n*** End Patch"}',
+} = {}) {
+  const item = {
+    id: itemId,
+    type: "function_call",
+    call_id: callId,
+    name,
+    arguments: argumentsJson,
+  };
+
+  return new Response(
+    [
+      `data: ${JSON.stringify({
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { ...item, arguments: "" },
+      })}`,
+      "",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 0,
+        item_id: itemId,
+        delta: argumentsJson,
+      })}`,
+      "",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.done",
+        output_index: 0,
+        item_id: itemId,
+        arguments: argumentsJson,
+      })}`,
+      "",
+      `data: ${JSON.stringify({
+        type: "response.output_item.done",
+        output_index: 0,
+        item,
+      })}`,
+      "",
+      `data: ${JSON.stringify({
+        type: "response.completed",
+        response: {
+          id: "resp_tool_call",
+          object: "response",
+          status: "completed",
+          model,
+          output: [item],
+          usage: {
+            input_tokens: 120,
+            output_tokens: 30,
+            prompt_tokens_details: { cached_tokens: 40 },
+            cache_creation_input_tokens: 11,
+            completion_tokens_details: { reasoning_tokens: 13 },
+          },
+        },
+      })}`,
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"),
+    {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }
+  );
+}
+
 function buildOpenAIResponsesJson({
   text = "responses compacted from codex",
   model = "gpt-5.5",
@@ -654,7 +725,7 @@ test("chat pipeline applies Codex CLI fingerprint to OAuth responses requests", 
   assert.match(call.url, /chatgpt\.com\/backend-api\/codex\/responses$/);
   assert.equal(call.headers.Authorization, "Bearer codex-oauth-token");
   assert.equal(call.headers.Accept, "text/event-stream");
-  assert.equal(call.headers.Version, "0.131.0");
+  assert.equal(call.headers.Version, "0.132.0");
   assert.equal(call.headers["Openai-Beta"], "responses=experimental");
   assert.equal(call.headers["X-Codex-Beta-Features"], "responses_websockets");
   assert.equal(call.headers["User-Agent"], "codex-cli/0.132.0 (Windows 10.0.26200; x64)");
@@ -683,6 +754,119 @@ test("chat pipeline applies Codex CLI fingerprint to OAuth responses requests", 
     call.body.client_metadata["x-codex-installation-id"],
     "11111111-1111-4111-a111-111111111111"
   );
+});
+
+test("chat pipeline normalizes Codex native Responses string input without dropping tools", async () => {
+  setCliCompatProviders(["codex"]);
+  await seedConnection("codex", {
+    apiKey: "unused-for-oauth",
+    authType: "oauth",
+    accessToken: "codex-oauth-token",
+    providerSpecificData: {
+      openaiStoreEnabled: false,
+    },
+  });
+
+  const fetchCalls: FetchCall[] = [];
+  globalThis.fetch = async (url, init: RequestInit = {}) => {
+    fetchCalls.push({
+      url: String(url),
+      headers: toPlainHeaders(init.headers),
+      body: init.body ? JSON.parse(String(init.body)) : null,
+    });
+    return buildOpenAIResponsesSSE({ text: "tool request ok" });
+  };
+
+  const response = await handleChat(
+    buildRequest({
+      url: "http://localhost/v1/responses",
+      headers: { Accept: "text/event-stream", "x-codex-session-id": "codex-tool-session" },
+      body: {
+        model: "cx/gpt-5.5",
+        input: "Edit codex-edit-test.txt",
+        tools: [
+          {
+            type: "function",
+            name: "apply_patch",
+            description: "Apply a unified patch",
+            parameters: {
+              type: "object",
+              properties: {
+                command: { type: "string" },
+              },
+              required: ["command"],
+            },
+          },
+        ],
+      },
+    })
+  );
+
+  await response.text();
+
+  assert.equal(response.status, 200);
+  assert.equal(fetchCalls.length, 1);
+  assert.match(fetchCalls[0].url, /chatgpt\.com\/backend-api\/codex\/responses$/);
+  assert.deepEqual(fetchCalls[0].body?.input, [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Edit codex-edit-test.txt" }],
+    },
+  ]);
+  assert.equal(fetchCalls[0].body?.tools?.[0]?.name, "apply_patch");
+  assert.equal(fetchCalls[0].body?.tools?.[0]?.parameters?.required?.[0], "command");
+  assert.equal(fetchCalls[0].body?.max_output_tokens, undefined);
+  assert.equal(fetchCalls[0].body?.stream, true);
+});
+
+test("chat pipeline passes Codex native Responses tool events through for file edit UI", async () => {
+  setCliCompatProviders(["codex"]);
+  await seedConnection("codex", {
+    apiKey: "unused-for-oauth",
+    authType: "oauth",
+    accessToken: "codex-oauth-token",
+    providerSpecificData: {
+      openaiStoreEnabled: false,
+    },
+  });
+
+  globalThis.fetch = async () => buildOpenAIResponsesFunctionCallSSE();
+
+  const response = await handleChat(
+    buildRequest({
+      url: "http://localhost/v1/responses",
+      headers: { Accept: "text/event-stream", "x-codex-session-id": "codex-tool-session" },
+      body: {
+        model: "cx/gpt-5.5",
+        input: "Edit codex-edit-test.txt",
+        tools: [
+          {
+            type: "function",
+            name: "apply_patch",
+            description: "Apply a unified patch",
+            parameters: {
+              type: "object",
+              properties: {
+                command: { type: "string" },
+              },
+              required: ["command"],
+            },
+          },
+        ],
+      },
+    })
+  );
+
+  const bodyText = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(bodyText, /response\.output_item\.added/);
+  assert.match(bodyText, /response\.function_call_arguments\.delta/);
+  assert.match(bodyText, /response\.function_call_arguments\.done/);
+  assert.match(bodyText, /response\.output_item\.done/);
+  assert.match(bodyText, /"name":"apply_patch"/);
+  assert.match(bodyText, /"call_id":"call_apply_patch"/);
 });
 
 test("chat pipeline treats Codex /responses/compact as non-streaming JSON", async () => {

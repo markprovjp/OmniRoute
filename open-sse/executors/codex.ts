@@ -1256,7 +1256,17 @@ export class CodexExecutor extends BaseExecutor {
 
     // Issue #1832 & #1853: Map messages to input for clients like Cursor 5.5 that use responses/compact but send messages instead of input.
     // This MUST run before convertSystemToDeveloperRole and stripStoredItemReferences.
-    if (!body.input && Array.isArray(body.messages)) {
+    if (typeof body.input === "string") {
+      body.input = [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: body.input }],
+        },
+      ];
+    } else if (body.input && typeof body.input === "object" && !Array.isArray(body.input)) {
+      body.input = [body.input];
+    } else if (!body.input && Array.isArray(body.messages)) {
       body.input = body.messages.map((msg: ResponsesMessageInput) => ({
         type: "message",
         role: typeof msg.role === "string" ? msg.role : "user",

@@ -52,6 +52,21 @@ test("GET /api/keys stays masked even when reveal is enabled", async () => {
   assert.equal(body.keys[0].key, maskKey(created.key));
 });
 
+test("GET /api/keys/[id]/reveal is enabled by default for management UI copy", async () => {
+  const created = await apiKeysDb.createApiKey("Default Reveal Key", MACHINE_ID);
+  const listResponse = await listRoute.GET(new Request("http://localhost/api/keys"));
+  const revealResponse = await revealRoute.GET(
+    new Request(`http://localhost/api/keys/${created.id}/reveal`),
+    { params: Promise.resolve({ id: created.id }) }
+  );
+  const listBody = (await listResponse.json()) as any;
+  const revealBody = (await revealResponse.json()) as any;
+
+  assert.equal(listBody.allowKeyReveal, true);
+  assert.equal(revealResponse.status, 200);
+  assert.equal(revealBody.key, created.key);
+});
+
 test("GET /api/keys falls back to default pagination for invalid query params", async () => {
   process.env.ALLOW_API_KEY_REVEAL = "false";
   await apiKeysDb.createApiKey("Alpha", MACHINE_ID);
