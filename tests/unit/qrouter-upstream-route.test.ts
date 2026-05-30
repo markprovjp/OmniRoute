@@ -44,10 +44,29 @@ test("POST /api/qrouter-upstream defaults external keys to qrouter prefix", asyn
   assert.equal(response.status, 201);
   assert.equal(body.upstream.prefix, "qrouter");
   assert.equal(body.upstream.model, "qrouter/gpt-5.5");
+  assert.equal(body.upstream.externalFirstModel, "cx/gpt-5.5");
 
   const nodes = await localDb.getProviderNodes({ type: "openai-compatible" });
   const qrouterNode = nodes.find((node: any) => node.baseUrl === "https://shopapikey.com/v1");
   assert.equal(qrouterNode?.prefix, "qrouter");
+
+  const connections = await localDb.getProviderConnections({ provider: body.upstream.providerId });
+  assert.equal(connections[0]?.providerSpecificData?.codexNativeCompatible, true);
+  assert.equal(connections[0]?.providerSpecificData?.fetchStartTimeoutMs, 30_000);
+  assert.equal(connections[0]?.providerSpecificData?.modelAlias, "cx/gpt-5.5");
+
+  const combo = await localDb.getComboByName("cx/gpt-5.5");
+  assert.equal(combo?.strategy, "priority");
+  assert.equal(combo?.context_length, 1_050_000);
+  assert.equal(combo?.config?.skipAvailabilityPrecheck, true);
+  assert.deepEqual(
+    combo?.models.map((step: any) => step.model),
+    ["qrouter/gpt-5.5", "cx/gpt-5.5"]
+  );
+  assert.deepEqual(
+    combo?.models.map((step: any) => step.providerId),
+    ["qrouter", "codex"]
+  );
 });
 
 test("POST /api/qrouter-upstream migrates legacy cx shopapikey node away from Codex alias", async () => {

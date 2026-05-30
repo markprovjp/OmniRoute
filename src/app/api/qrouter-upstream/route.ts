@@ -8,6 +8,7 @@ import {
   updateProviderNode,
   updateProviderConnection,
 } from "@/lib/db/providers";
+import { createCombo, getComboByName, updateCombo } from "@/lib/db/combos";
 import { addCustomModel } from "@/lib/db/models";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { OPENAI_COMPATIBLE_PREFIX } from "@/shared/constants/providers";
@@ -19,6 +20,8 @@ const DEFAULT_BASE_URL = "https://shopapikey.com/v1";
 const DEFAULT_MODEL_ID = "gpt-5.5";
 const DEFAULT_API_TYPE = "responses";
 const CONNECTION_NAME_SUFFIX = "external key pool";
+const CODEX_EXTERNAL_FIRST_MODEL = "cx/gpt-5.5";
+const CODEX_EXTERNAL_FETCH_START_TIMEOUT_MS = 30_000;
 
 const qrouterUpstreamSchema = z.object({
   name: z.string().trim().min(1).max(80).default(DEFAULT_PROVIDER_NAME),
@@ -117,9 +120,10 @@ function buildStatus(
     connections.length > 0
       ? connections.some((c) => c.isActive !== false)
       : connection?.isActive !== false;
+  const activeConnections = connections.filter((c) => c.isActive !== false);
   const keyCount =
-    connections.length > 0
-      ? connections.reduce((acc, c) => acc + countConfiguredKeys(c), 0)
+    activeConnections.length > 0
+      ? activeConnections.reduce((acc, c) => acc + countConfiguredKeys(c), 0)
       : countConfiguredKeys(connection);
 
   return {
@@ -132,6 +136,7 @@ function buildStatus(
     modelId,
     model: `${prefix}/${modelId}`,
     apiType: node?.apiType || DEFAULT_API_TYPE,
+    externalFirstModel: CODEX_EXTERNAL_FIRST_MODEL,
     keyCount,
     isActive,
     health:
@@ -140,6 +145,34 @@ function buildStatus(
         ? connection.providerSpecificData.apiKeyHealth
         : {},
   };
+}
+
+async function upsertCodexExternalFirstCombo(prefix: string, modelId: string) {
+  const externalModel = `${prefix}/${modelId}`;
+  const models = [
+    { kind: "model", model: externalModel, providerId: prefix, weight: 0 },
+    { kind: "model", model: CODEX_EXTERNAL_FIRST_MODEL, providerId: "codex", weight: 0 },
+  ];
+  const existing = await getComboByName(CODEX_EXTERNAL_FIRST_MODEL);
+  const payload = {
+    name: CODEX_EXTERNAL_FIRST_MODEL,
+    strategy: "priority",
+    models,
+    context_length: 1_050_000,
+    isHidden: false,
+    config: {
+      externalFirst: true,
+      externalModel,
+      skipAvailabilityPrecheck: true,
+      systemFallbackModel: CODEX_EXTERNAL_FIRST_MODEL,
+    },
+  };
+
+  if (existing && typeof existing.id === "string") {
+    return updateCombo(existing.id, payload);
+  }
+
+  return createCombo(payload);
 }
 
 export async function GET(request: Request) {
@@ -284,6 +317,9 @@ export async function POST(request: Request) {
         prefix,
         nodeName: name,
         extraApiKeys: apiKeys.slice(1),
+        codexNativeCompatible: true,
+        fetchStartTimeoutMs: CODEX_EXTERNAL_FETCH_START_TIMEOUT_MS,
+        modelAlias: CODEX_EXTERNAL_FIRST_MODEL,
         passthroughModels: true,
         validationModelId: modelId,
       },
@@ -295,6 +331,8 @@ export async function POST(request: Request) {
         ? await updateProviderConnection(existingConnection.id, connectionPayload)
         : await createProviderConnection(connectionPayload)
     ) as ProviderConnection;
+
+    await upsertCodexExternalFirstCombo(prefix, modelId);
 
     return NextResponse.json({ upstream: buildStatus(node, connection) }, { status: 201 });
   } catch (error) {

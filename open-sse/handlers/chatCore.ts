@@ -420,14 +420,21 @@ function resolveMemoryOwnerId(apiKeyInfo: Record<string, unknown> | null): strin
 
 export function shouldUseNativeCodexPassthrough({
   provider,
+  providerSpecificData,
   sourceFormat,
   endpointPath,
 }: {
   provider?: string | null;
+  providerSpecificData?: Record<string, unknown> | null;
   sourceFormat?: string | null;
   endpointPath?: string | null;
 }): boolean {
-  if (provider !== "codex") return false;
+  const isNativeCodexProvider =
+    provider === "codex" ||
+    (typeof provider === "string" &&
+      provider.startsWith("openai-compatible-") &&
+      providerSpecificData?.codexNativeCompatible === true);
+  if (!isNativeCodexProvider) return false;
   if (sourceFormat !== FORMATS.OPENAI_RESPONSES) return false;
   let normalizedEndpoint = String(endpointPath || "");
   while (normalizedEndpoint.endsWith("/")) normalizedEndpoint = normalizedEndpoint.slice(0, -1);
@@ -1505,6 +1512,7 @@ export async function handleChatCore({
     /\/responses(?=\/|$)/i.test(endpointPath) || /^responses(?=\/|$)/i.test(endpointPath);
   const nativeCodexPassthrough = shouldUseNativeCodexPassthrough({
     provider,
+    providerSpecificData: credentials?.providerSpecificData,
     sourceFormat,
     endpointPath,
   });

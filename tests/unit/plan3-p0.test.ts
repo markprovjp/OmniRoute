@@ -229,6 +229,26 @@ test("shouldUseNativeCodexPassthrough only enables responses-native Codex reques
 
   assert.equal(
     shouldUseNativeCodexPassthrough({
+      provider: "openai-compatible-responses-shopapikey",
+      providerSpecificData: { codexNativeCompatible: true },
+      sourceFormat: FORMATS.OPENAI_RESPONSES,
+      endpointPath: "/v1/responses",
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldUseNativeCodexPassthrough({
+      provider: "openai-compatible-responses-shopapikey",
+      providerSpecificData: { codexNativeCompatible: false },
+      sourceFormat: FORMATS.OPENAI_RESPONSES,
+      endpointPath: "/v1/responses",
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldUseNativeCodexPassthrough({
       provider: "codex",
       sourceFormat: FORMATS.OPENAI_RESPONSES,
       endpointPath: "/v1/responses/compact",

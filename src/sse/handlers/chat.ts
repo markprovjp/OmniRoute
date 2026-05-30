@@ -429,6 +429,11 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
 
     // Pre-check function used by combo routing. For explicit combo live tests,
     // avoid pre-skipping so each model gets a real execution attempt.
+    const comboRuntimeConfig =
+      combo?.config && typeof combo.config === "object"
+        ? (combo.config as Record<string, unknown>)
+        : {};
+    const skipAvailabilityPrecheck = comboRuntimeConfig.skipAvailabilityPrecheck === true;
     const comboPreselectedCredentials = new Map<string, any>();
     const getComboCredentialCacheKey = (
       modelString: string,
@@ -442,7 +447,7 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
         executionKey?: string | null;
       }
     ) => {
-      if (isComboLiveTest) return true;
+      if (isComboLiveTest || skipAvailabilityPrecheck) return true;
 
       // Use getModelInfo to properly resolve custom prefixes
       const modelInfo = await getModelInfo(modelString);

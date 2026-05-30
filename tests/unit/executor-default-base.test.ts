@@ -73,6 +73,20 @@ test("BaseExecutor: legacy openai-compatible providers honor providerSpecificDat
   assert.equal(url, "https://proxy.example/v1/responses");
 });
 
+test("BaseExecutor: providerSpecificData can bound fetch-start timeout", () => {
+  const executor = new BaseExecutor("openai-compatible-sp-openai", { timeoutMs: 60_000 });
+
+  assert.equal(
+    executor.getTimeoutMs({ providerSpecificData: { fetchStartTimeoutMs: 30_000 } }),
+    30_000
+  );
+  assert.equal(executor.getTimeoutMs({ providerSpecificData: { fetchStartTimeoutMs: 0.4 } }), 1);
+  assert.equal(
+    executor.getTimeoutMs({ providerSpecificData: { fetchStartTimeoutMs: Infinity } }),
+    60_000
+  );
+});
+
 test("DefaultExecutor.buildUrl handles Gemini, Claude and Qwen variants", () => {
   const gemini = new DefaultExecutor("gemini");
   const claude = new DefaultExecutor("claude");
@@ -146,6 +160,17 @@ test("DefaultExecutor.buildUrl handles openai-compatible and anthropic-compatibl
       },
     }),
     "https://proxy.example/v1/responses"
+  );
+  assert.equal(
+    openAILegacyResponsesCompat.buildUrl("gpt-5.5", true, 0, {
+      providerSpecificData: {
+        apiType: "responses",
+        baseUrl: "https://shopapikey.com/v1/",
+        codexNativeCompatible: true,
+      },
+      requestEndpointPath: "/v1/responses/compact",
+    }),
+    "https://shopapikey.com/v1/responses/compact"
   );
   assert.equal(
     anthropicCompat.buildUrl("claude-sonnet-4", true, 0, {
@@ -483,6 +508,36 @@ test("DefaultExecutor.buildHeaders rotates extra API keys and builds Claude Code
   assert.equal(ccHeaders["X-Claude-Code-Session-Id"], "session-1");
   assert.equal(ccHeaders.Accept, "application/json");
   assert.equal(ccJsonHeaders.Accept, "application/json");
+});
+
+test("DefaultExecutor applies Codex-compatible headers and request shape to external responses upstreams", () => {
+  const executor = new DefaultExecutor("openai-compatible-responses-shopapikey");
+  const credentials = {
+    apiKey: "sk-test",
+    providerSpecificData: {
+      apiType: "responses",
+      baseUrl: "https://shopapikey.com/v1",
+      codexNativeCompatible: true,
+      modelAlias: "cx/gpt-5.5",
+    },
+  };
+
+  const headers = executor.buildHeaders(credentials, false);
+  const body = executor.transformRequest(
+    "gpt-5.5",
+    { model: "gpt-5.5", input: "hello", stream: false },
+    false,
+    credentials
+  ) as Record<string, unknown>;
+
+  assert.equal(headers.Authorization, "Bearer sk-test");
+  assert.equal(headers.Accept, "text/event-stream");
+  assert.equal(headers.Version, "0.132.0");
+  assert.equal(headers["Openai-Beta"], "responses=experimental");
+  assert.equal(headers.originator, "codex_cli_rs");
+  assert.equal(body.model, "cx/gpt-5.5");
+  assert.equal(body.stream, true);
+  assert.equal(body.store, false);
 });
 
 test("DefaultExecutor.execute uses CC-compatible connection defaults to append 1M beta", async () => {

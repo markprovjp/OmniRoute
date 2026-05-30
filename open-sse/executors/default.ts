@@ -14,6 +14,7 @@ import {
 } from "../services/claudeCodeCompatible.ts";
 import { getGigachatAccessToken } from "../services/gigachatAuth.ts";
 import { getRegistryEntry } from "../config/providerRegistry.ts";
+import { getCodexClientVersion, getCodexUserAgent } from "../config/codexClient.ts";
 import { applyProviderRequestDefaults } from "../services/providerRequestDefaults.ts";
 import {
   detectFormat,
@@ -29,6 +30,7 @@ import { buildWatsonxChatUrl } from "../config/watsonx.ts";
 import { buildOciChatUrl } from "../config/oci.ts";
 import { buildSapChatUrl, getSapResourceGroup } from "../config/sap.ts";
 import { buildMaritalkChatUrl } from "../config/maritalk.ts";
+import { setUserAgentHeader } from "./base.ts";
 
 function normalizeBaseUrl(baseUrl) {
   return (baseUrl || "").trim().replace(/\/$/, "");
@@ -101,6 +103,16 @@ function normalizeOpenAIChatUrl(baseUrl) {
   return normalized.endsWith("/v1") ? `${normalized}/chat/completions` : normalized;
 }
 
+function getResponsesSubpath(endpointPath) {
+  if (typeof endpointPath !== "string") return null;
+  const match = endpointPath.match(/\/responses(?<subpath>\/.*)?$/i);
+  return match?.groups?.subpath || "";
+}
+
+function isCodexNativeCompatible(credentials) {
+  return credentials?.providerSpecificData?.codexNativeCompatible === true;
+}
+
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
@@ -116,6 +128,12 @@ export class DefaultExecutor extends BaseExecutor {
       const normalized = baseUrl.replace(/\/$/, "");
       const customPath = typeof psd?.chatPath === "string" && psd.chatPath ? psd.chatPath : null;
       if (customPath) return `${normalized}${customPath}`;
+      const responsesSubpath = isCodexNativeCompatible(credentials)
+        ? getResponsesSubpath(credentials?.requestEndpointPath)
+        : null;
+      if (responsesSubpath !== null) {
+        return `${normalized}/responses${responsesSubpath}`;
+      }
       const path =
         getOpenAICompatibleType(this.provider, psd) === "responses"
           ? "/responses"
@@ -395,6 +413,15 @@ export class DefaultExecutor extends BaseExecutor {
 
     headers["Accept"] = stream ? "text/event-stream" : "application/json";
 
+    if (this.provider?.startsWith?.("openai-compatible-") && isCodexNativeCompatible(credentials)) {
+      headers.Version = getCodexClientVersion();
+      headers["Openai-Beta"] = "responses=experimental";
+      headers["X-Codex-Beta-Features"] = "responses_websockets";
+      headers.originator = "codex_cli_rs";
+      setUserAgentHeader(headers, getCodexUserAgent());
+      headers.Accept = "text/event-stream";
+    }
+
     // Qwen header cleanup: Remove X-Dashscope-* headers if using an API key (DashScope compatible mode).
     // If using OAuth (Qwen Code), we MUST keep them for portal.qwen.ai to accept the request.
     if (this.provider === "qwen" && effectiveKey) {
@@ -426,6 +453,18 @@ export class DefaultExecutor extends BaseExecutor {
         : "openai";
 
     if (typeof withDefaults === "object" && withDefaults !== null && !Array.isArray(withDefaults)) {
+      if (
+        this.provider?.startsWith?.("openai-compatible-") &&
+        isCodexNativeCompatible(credentials)
+      ) {
+        const record = withDefaults as Record<string, unknown>;
+        record.stream = true;
+        record.store = false;
+        if (typeof credentials?.providerSpecificData?.modelAlias === "string") {
+          record.model = credentials.providerSpecificData.modelAlias;
+        }
+      }
+
       if (this.provider?.startsWith?.("anthropic-compatible-")) {
         if (Object.prototype.hasOwnProperty.call(withDefaults, "stream_options")) {
           const withoutStreamOptions = { ...withDefaults } as Record<string, unknown>;

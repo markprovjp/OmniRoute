@@ -283,7 +283,17 @@ export class BaseExecutor {
     return this.getBaseUrls().length || 1;
   }
 
-  getTimeoutMs() {
+  getTimeoutMs(credentials?: ProviderCredentials | null) {
+    const credentialTimeout =
+      credentials?.providerSpecificData &&
+      typeof credentials.providerSpecificData === "object" &&
+      typeof credentials.providerSpecificData.fetchStartTimeoutMs === "number"
+        ? credentials.providerSpecificData.fetchStartTimeoutMs
+        : null;
+    if (typeof credentialTimeout === "number" && Number.isFinite(credentialTimeout)) {
+      return Math.max(1, Math.floor(credentialTimeout));
+    }
+
     const configured = this.config?.timeoutMs;
     if (typeof configured !== "number" || !Number.isFinite(configured)) {
       return FETCH_TIMEOUT_MS;
@@ -601,7 +611,7 @@ export class BaseExecutor {
         // Only enforce the timeout while waiting for the initial fetch() response.
         // Once headers arrive, active streams must not be cut off by total elapsed time;
         // post-start stalls are handled separately by STREAM_IDLE_TIMEOUT_MS / bodyTimeout.
-        const fetchStartTimeoutMs = this.getTimeoutMs();
+        const fetchStartTimeoutMs = this.getTimeoutMs(activeCredentials);
         const timeoutController = fetchStartTimeoutMs > 0 ? new AbortController() : null;
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
         if (timeoutController) {
