@@ -386,7 +386,10 @@ function normalizeStatus(value: string | null): string {
 
 function isTerminalConnectionStatus(connection: ProviderConnectionView): boolean {
   const status = normalizeStatus(connection.testStatus);
-  return status === "credits_exhausted" || status === "banned" || status === "expired";
+  if (status === "expired") {
+    return !connection.refreshToken;
+  }
+  return status === "credits_exhausted" || status === "banned";
 }
 
 function resolveTerminalConnectionStatus(

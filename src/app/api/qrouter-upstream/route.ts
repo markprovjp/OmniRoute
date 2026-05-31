@@ -332,6 +332,15 @@ export async function POST(request: Request) {
         : await createProviderConnection(connectionPayload)
     ) as ProviderConnection;
 
+    const staleConnections = (await getProviderConnections({
+      provider: node.id,
+    })) as ProviderConnection[];
+    await Promise.all(
+      staleConnections
+        .filter((candidate) => candidate.id !== connection.id && candidate.isActive !== false)
+        .map((candidate) => updateProviderConnection(candidate.id, { isActive: false }))
+    );
+
     await upsertCodexExternalFirstCombo(prefix, modelId);
 
     return NextResponse.json({ upstream: buildStatus(node, connection) }, { status: 201 });

@@ -51,9 +51,11 @@ test("POST /api/qrouter-upstream defaults external keys to qrouter prefix", asyn
   assert.equal(qrouterNode?.prefix, "qrouter");
 
   const connections = await localDb.getProviderConnections({ provider: body.upstream.providerId });
-  assert.equal(connections[0]?.providerSpecificData?.codexNativeCompatible, true);
-  assert.equal(connections[0]?.providerSpecificData?.fetchStartTimeoutMs, 30_000);
-  assert.equal(connections[0]?.providerSpecificData?.modelAlias, "cx/gpt-5.5");
+  const activeConnections = connections.filter((connection: any) => connection.isActive !== false);
+  assert.equal(activeConnections.length, 1);
+  assert.equal(activeConnections[0]?.providerSpecificData?.codexNativeCompatible, true);
+  assert.equal(activeConnections[0]?.providerSpecificData?.fetchStartTimeoutMs, 30_000);
+  assert.equal(activeConnections[0]?.providerSpecificData?.modelAlias, "cx/gpt-5.5");
 
   const combo = await localDb.getComboByName("cx/gpt-5.5");
   assert.equal(combo?.strategy, "priority");
