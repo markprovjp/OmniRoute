@@ -138,7 +138,11 @@ export const IMAGE_PROVIDERS: Record<string, ImageProviderConfig> = {
     authType: "oauth",
     authHeader: "bearer",
     format: "codex-responses",
-    models: [{ id: "gpt-5.5", name: "GPT 5.5 (Codex Image)" }],
+    models: [
+      { id: "gpt-5.5", name: "GPT 5.5 (Codex Image)" },
+      { id: "gpt-5.4", name: "GPT 5.4 (Codex Image)" },
+      { id: "gpt-5.4-mini", name: "GPT 5.4 Mini (Codex Image)" },
+    ],
     supportedSizes: ["1024x1024", "1024x1536", "1536x1024"],
   },
 

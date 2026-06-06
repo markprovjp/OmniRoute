@@ -95,7 +95,6 @@ for (const [aliasOrId, models] of Object.entries(PROVIDER_MODELS)) {
   }
 }
 const KNOWN_MODEL_IDS = new Set(MODEL_TO_PROVIDERS.keys());
-const CODEX_PREFERRED_UNPREFIXED_MODELS = new Set(["gpt-5.5"]);
 const CODEX_PREFERRED_UNPREFIXED_MODEL_ALIASES = new Map([["gpt-5.5", "gpt-5.5-medium"]]);
 export const CODEX_NATIVE_UNPREFIXED_MODELS = new Set(["codex-auto-review"]);
 
@@ -179,6 +178,11 @@ function hasCodexPreferredUnprefixedModel(modelId: string) {
   return models.some((entry) => entry?.id === canonicalModel);
 }
 
+function hasCodexUnprefixedFallbackModel(modelId: string) {
+  const codexModel = CODEX_PREFERRED_UNPREFIXED_MODEL_ALIASES.get(modelId) || modelId;
+  return hasKnownProviderModel("codex", codexModel);
+}
+
 function resolveInferredProviderModel(provider: string, modelId: string) {
   const codexPreferredModel = CODEX_PREFERRED_UNPREFIXED_MODEL_ALIASES.get(modelId);
   if (provider === "codex" && codexPreferredModel) {
@@ -191,7 +195,7 @@ function getInferredProvidersForModel(modelId: string) {
   const providers = [...(MODEL_TO_PROVIDERS.get(modelId) || [])];
 
   if (
-    CODEX_PREFERRED_UNPREFIXED_MODELS.has(modelId) &&
+    CODEX_PREFERRED_UNPREFIXED_MODEL_ALIASES.has(modelId) &&
     hasCodexPreferredUnprefixedModel(modelId) &&
     !providers.includes("codex")
   ) {
@@ -410,7 +414,20 @@ async function resolveModelByProviderInference(modelId: string, extendedContext:
     activeProviders?.has("codex") &&
     !activeProviders.has("openai") &&
     providers.includes("codex") &&
-    CODEX_PREFERRED_UNPREFIXED_MODELS.has(modelId)
+    CODEX_PREFERRED_UNPREFIXED_MODEL_ALIASES.has(modelId)
+  ) {
+    return {
+      provider: "codex",
+      model: resolveInferredProviderModel("codex", modelId),
+      extendedContext,
+    };
+  }
+
+  if (
+    activeProviders?.has("codex") &&
+    !activeProviders.has("openai") &&
+    /^gpt-/i.test(modelId) &&
+    hasCodexUnprefixedFallbackModel(modelId)
   ) {
     return {
       provider: "codex",
