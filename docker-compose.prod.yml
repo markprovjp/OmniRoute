@@ -58,6 +58,30 @@ services:
       retries: 3
       start_period: 15s
 
+  omniroute-watchdog:
+    image: docker:27-cli
+    container_name: omniroute-watchdog
+    restart: unless-stopped
+    depends_on:
+      omniroute-prod:
+        condition: service_started
+    environment:
+      - WATCHDOG_INTERVAL_SECONDS=${WATCHDOG_INTERVAL_SECONDS:-20}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      - sh
+      - -c
+      - |
+        while true; do
+          status=$$(docker inspect -f "{{.State.Health.Status}}" omniroute-prod 2>/dev/null || echo missing);
+          if [ "$$status" = "unhealthy" ] || [ "$$status" = "missing" ]; then
+            echo "[watchdog] omniroute-prod $$status; restarting";
+            docker restart omniroute-prod 2>/dev/null || true;
+          fi;
+          sleep "$${WATCHDOG_INTERVAL_SECONDS:-20}";
+        done
+
 volumes:
   omniroute-prod-data:
     name: omniroute-prod-data
