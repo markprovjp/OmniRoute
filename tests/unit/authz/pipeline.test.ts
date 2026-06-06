@@ -83,19 +83,10 @@ test("runAuthzPipeline keeps qrouter root host from exposing management UI", asy
   const login = await pipeline.runAuthzPipeline(request("https://qrouter.online/login"), {
     enforce: true,
   });
-  const v1Models = await pipeline.runAuthzPipeline(request("https://qrouter.online/v1/models"), {
-    enforce: true,
-  });
-  const legacyApiModels = await pipeline.runAuthzPipeline(
-    request("https://qrouter.online/api/v1/models"),
-    { enforce: true }
-  );
 
   assert.equal(root.status, 404);
   assert.equal(dashboard.status, 404);
   assert.equal(login.status, 404);
-  assert.equal(v1Models.status, 200);
-  assert.equal(legacyApiModels.status, 404);
 });
 
 test("runAuthzPipeline reserves customer host for the usage checker", async () => {

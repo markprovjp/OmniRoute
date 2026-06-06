@@ -869,63 +869,6 @@ test("chat pipeline passes Codex native Responses tool events through for file e
   assert.match(bodyText, /"call_id":"call_apply_patch"/);
 });
 
-test("chat pipeline preserves native Codex custom edit tools", async () => {
-  setCliCompatProviders(["codex"]);
-  await seedConnection("codex", {
-    apiKey: "unused-for-oauth",
-    authType: "oauth",
-    accessToken: "codex-oauth-token",
-    providerSpecificData: {
-      openaiStoreEnabled: false,
-    },
-  });
-
-  const fetchCalls: FetchCall[] = [];
-  globalThis.fetch = async (url, init: RequestInit = {}) => {
-    fetchCalls.push({
-      url: String(url),
-      headers: toPlainHeaders(init.headers),
-      body: init.body ? JSON.parse(String(init.body)) : null,
-    });
-    return buildOpenAIResponsesFunctionCallSSE({
-      argumentsJson: "*** Begin Patch\n*** End Patch",
-    });
-  };
-
-  const response = await handleChat(
-    buildRequest({
-      url: "http://localhost/v1/responses",
-      headers: { Accept: "text/event-stream", "x-codex-session-id": "codex-tool-session" },
-      body: {
-        model: "cx/gpt-5.5",
-        input: "Edit codex-edit-test.txt",
-        tools: [
-          {
-            type: "custom",
-            name: "apply_patch",
-            description: "Apply a freeform patch",
-          },
-        ],
-        tool_choice: { type: "custom", name: "apply_patch" },
-      },
-    })
-  );
-
-  const bodyText = await response.text();
-
-  assert.equal(response.status, 200);
-  assert.equal(fetchCalls.length, 1);
-  assert.match(fetchCalls[0].url, /chatgpt\.com\/backend-api\/codex\/responses$/);
-  assert.deepEqual(fetchCalls[0].body?.tools?.[0], {
-    type: "custom",
-    name: "apply_patch",
-    description: "Apply a freeform patch",
-  });
-  assert.deepEqual(fetchCalls[0].body?.tool_choice, { type: "custom", name: "apply_patch" });
-  assert.match(bodyText, /response\.function_call_arguments\.delta/);
-  assert.match(bodyText, /"name":"apply_patch"/);
-});
-
 test("chat pipeline treats Codex /responses/compact as non-streaming JSON", async () => {
   await seedConnection("codex", { apiKey: "sk-codex-compact" });
   const fetchCalls = [];

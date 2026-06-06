@@ -563,10 +563,7 @@ const CODEX_HOSTED_TOOL_TYPES: ReadonlySet<string> = new Set([
   "local_shell",
 ]);
 
-function normalizeCodexTools(
-  body: Record<string, unknown>,
-  options: { preserveNativeCustomTools?: boolean } = {}
-): void {
+function normalizeCodexTools(body: Record<string, unknown>): void {
   if (!Array.isArray(body.tools)) return;
 
   const validToolNames = new Set<string>();
@@ -590,18 +587,6 @@ function normalizeCodexTools(
           }
         }
       }
-      return true;
-    }
-
-    // Native Codex clients define file-edit/shell tools as Responses custom tools,
-    // for example `{ type: "custom", name: "apply_patch" }`. Keep those in the
-    // native passthrough path so Codex can emit first-class tool calls instead of
-    // degrading to text instructions or wrapper scripts.
-    if (options.preserveNativeCustomTools && (toolType === "custom" || toolType === "command")) {
-      const name = typeof tool.name === "string" ? tool.name.trim() : "";
-      if (!name) return false;
-      tool.name = name.slice(0, 128);
-      validToolNames.add(name);
       return true;
     }
 
@@ -676,11 +661,7 @@ function normalizeCodexTools(
     !Array.isArray(body.tool_choice)
   ) {
     const toolChoice = body.tool_choice as Record<string, unknown>;
-    if (
-      toolChoice.type === "function" ||
-      toolChoice.type === "custom" ||
-      toolChoice.type === "command"
-    ) {
+    if (toolChoice.type === "function") {
       const rawName = typeof toolChoice.name === "string" ? toolChoice.name.trim() : "";
       if (!rawName || !validToolNames.has(rawName)) {
         delete body.tool_choice;
@@ -1393,7 +1374,7 @@ export class CodexExecutor extends BaseExecutor {
     // Codex Responses only supports function tools with non-empty names.
     // Cursor may include custom tools (e.g. ApplyPatch) that work locally but are
     // invalid upstream, and translation bugs can leave orphaned/empty tool_choice names.
-    normalizeCodexTools(body, { preserveNativeCustomTools: nativeCodexPassthrough });
+    normalizeCodexTools(body);
 
     // Strip stored response item references (rs_, resp_, msg_ IDs) from input.
     // The /codex/responses endpoint does not persist responses even with store=true,
