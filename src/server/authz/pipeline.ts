@@ -31,6 +31,52 @@ const POLICIES: Record<RouteClass, RoutePolicy> = {
   MANAGEMENT: managementPolicy,
 };
 
+const ADMIN_HOSTS = new Set(["admin-x7k2.qrouter.online", "admin.qrouter.online"]);
+const CUSTOMER_HOSTS = new Set(["customer.qrouter.online"]);
+const ROOT_PUBLIC_HOSTS = new Set(["qrouter.online", "www.qrouter.online"]);
+
+function getRequestHost(request: NextRequest): string {
+  const forwarded =
+    request.headers.get("x-forwarded-host") || request.headers.get("host") || request.nextUrl.host;
+  const host = forwarded.split(",")[0]?.trim().toLowerCase() || "";
+  return host.replace(/:\d+$/, "");
+}
+
+function isClientApiSurface(pathname: string): boolean {
+  return (
+    pathname === "/models" ||
+    pathname === "/v1" ||
+    pathname.startsWith("/v1/") ||
+    pathname === "/codex" ||
+    pathname.startsWith("/codex/") ||
+    pathname === "/responses" ||
+    pathname.startsWith("/responses/") ||
+    pathname.startsWith("/chat/") ||
+    pathname === "/api/v1" ||
+    pathname.startsWith("/api/v1/")
+  );
+}
+
+function isCustomerUsagePath(pathname: string): boolean {
+  return pathname === "/usage" || pathname === "/api/customer/usage";
+}
+
+function notFoundHostResponse(request: NextRequest, requestId: string): NextResponse {
+  const wantsJson =
+    request.nextUrl.pathname.startsWith("/api/") ||
+    (request.headers.get("accept") || "").toLowerCase().includes("application/json");
+  const response = wantsJson
+    ? NextResponse.json(
+        { error: { code: "NOT_FOUND", message: "Not found", correlation_id: requestId } },
+        { status: 404 }
+      )
+    : new NextResponse("Not found", { status: 404 });
+  response.headers.set(AUTHZ_HEADER_REQUEST_ID, requestId);
+  response.headers.set(AUTHZ_HEADER_ROUTE_CLASS, "PUBLIC");
+  applyCorsHeaders(response, request);
+  return response;
+}
+
 function stampSubject(headers: Headers, subject: AuthSubject): void {
   headers.set(AUTHZ_HEADER_AUTH_KIND, subject.kind);
   headers.set(AUTHZ_HEADER_AUTH_ID, subject.id);
@@ -189,6 +235,33 @@ export async function runAuthzPipeline(
   const method = request.method;
 
   const requestId = generateRequestId();
+
+  const host = getRequestHost(request);
+
+  if (CUSTOMER_HOSTS.has(host)) {
+    if (pathname === "/" || pathname === "/login" || pathname === "/dashboard/usage") {
+      const response = NextResponse.redirect(new URL("/usage", request.url));
+      return stampRouteResponse(response, requestId, "PUBLIC");
+    }
+
+    if (isCustomerUsagePath(pathname)) {
+      const response = NextResponse.next();
+      stampRouteResponse(response, requestId, "PUBLIC");
+      applyCorsHeaders(response, request);
+      return response;
+    }
+
+    return notFoundHostResponse(request, requestId);
+  }
+
+  if (ROOT_PUBLIC_HOSTS.has(host) && !ADMIN_HOSTS.has(host) && !isClientApiSurface(pathname)) {
+    return notFoundHostResponse(request, requestId);
+  }
+
+  if (pathname === "/login") {
+    const response = NextResponse.next();
+    return stampRouteResponse(response, requestId, "PUBLIC");
+  }
 
   if (pathname === "/") {
     const response = NextResponse.redirect(new URL("/dashboard", request.url));

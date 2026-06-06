@@ -13,6 +13,7 @@ const apiKeysDb = await import("../../src/lib/db/apiKeys.ts");
 const quotaLedger = await import("../../src/lib/usage/apiKeyQuotaLedger.ts");
 const usageHistory = await import("../../src/lib/usage/usageHistory.ts");
 const usageRoute = await import("../../src/app/api/v1/usage/route.ts");
+const customerUsageRoute = await import("../../src/app/api/customer/usage/route.ts");
 
 const MACHINE_ID = "1234567890abcdef";
 
@@ -116,6 +117,37 @@ test("POST /api/v1/usage accepts a key body for dashboard-style public usage che
   assert.equal(body.usage.today.totalGptTokens, 75);
   assert.equal(body.tokenQuota.used, 75);
   assert.equal(body.tokenQuota.remaining, 425);
+});
+
+test("POST /api/customer/usage reuses the public customer usage check", async () => {
+  const apiKey = await apiKeysDb.createApiKey("Customer portal key", MACHINE_ID, {
+    dailyTokenLimit: 250,
+    commercialKey: true,
+  });
+  await usageHistory.saveRequestUsage({
+    apiKeyId: apiKey.id,
+    apiKeyName: apiKey.name,
+    provider: "codex",
+    model: "gpt-5.5",
+    status: "200",
+    success: true,
+    tokens: { input: 40, output: 10 },
+  });
+
+  const response = await customerUsageRoute.POST(
+    new Request("http://localhost/api/customer/usage", {
+      method: "POST",
+      body: JSON.stringify({ apiKey: apiKey.key }),
+      headers: { "content-type": "application/json" },
+    })
+  );
+  const body = (await response.json()) as any;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.key.prefix.includes("****"), true);
+  assert.equal(body.tokenQuota.used, 50);
+  assert.equal(body.tokenQuota.remaining, 200);
 });
 
 test("GET /api/v1/usage includes request reservations in daily quota usage", async () => {

@@ -71,6 +71,79 @@ test("runAuthzPipeline redirects root to dashboard before management auth", asyn
   assert.equal(response.headers.get("location"), "http://localhost/dashboard");
 });
 
+test("runAuthzPipeline keeps qrouter root host from exposing management UI", async () => {
+  await forceAuthRequired();
+
+  const root = await pipeline.runAuthzPipeline(request("https://qrouter.online/"), {
+    enforce: true,
+  });
+  const dashboard = await pipeline.runAuthzPipeline(request("https://qrouter.online/dashboard"), {
+    enforce: true,
+  });
+  const login = await pipeline.runAuthzPipeline(request("https://qrouter.online/login"), {
+    enforce: true,
+  });
+
+  assert.equal(root.status, 404);
+  assert.equal(dashboard.status, 404);
+  assert.equal(login.status, 404);
+});
+
+test("runAuthzPipeline reserves customer host for the usage checker", async () => {
+  await forceAuthRequired();
+
+  const root = await pipeline.runAuthzPipeline(request("https://customer.qrouter.online/"), {
+    enforce: true,
+  });
+  const login = await pipeline.runAuthzPipeline(request("https://customer.qrouter.online/login"), {
+    enforce: true,
+  });
+  const usage = await pipeline.runAuthzPipeline(request("https://customer.qrouter.online/usage"), {
+    enforce: true,
+  });
+  const usageApi = await pipeline.runAuthzPipeline(
+    request("https://customer.qrouter.online/api/customer/usage", { method: "POST" }),
+    { enforce: true }
+  );
+  const dashboard = await pipeline.runAuthzPipeline(
+    request("https://customer.qrouter.online/dashboard"),
+    { enforce: true }
+  );
+
+  assert.equal(root.status, 307);
+  assert.equal(root.headers.get("location"), "https://customer.qrouter.online/usage");
+  assert.equal(login.status, 307);
+  assert.equal(login.headers.get("location"), "https://customer.qrouter.online/usage");
+  assert.equal(usage.status, 200);
+  assert.equal(usage.headers.get("x-omniroute-route-class"), "PUBLIC");
+  assert.equal(usageApi.status, 200);
+  assert.equal(usageApi.headers.get("x-omniroute-route-class"), "PUBLIC");
+  assert.equal(dashboard.status, 404);
+});
+
+test("runAuthzPipeline keeps admin host login and dashboard behavior", async () => {
+  await forceAuthRequired();
+
+  const root = await pipeline.runAuthzPipeline(request("https://admin-x7k2.qrouter.online/"), {
+    enforce: true,
+  });
+  const login = await pipeline.runAuthzPipeline(
+    request("https://admin-x7k2.qrouter.online/login"),
+    { enforce: true }
+  );
+  const dashboard = await pipeline.runAuthzPipeline(
+    request("https://admin-x7k2.qrouter.online/dashboard"),
+    { enforce: true }
+  );
+
+  assert.equal(root.status, 307);
+  assert.equal(root.headers.get("location"), "https://admin-x7k2.qrouter.online/dashboard");
+  assert.equal(login.status, 200);
+  assert.equal(login.headers.get("x-omniroute-route-class"), "PUBLIC");
+  assert.equal(dashboard.status, 307);
+  assert.equal(dashboard.headers.get("location"), "https://admin-x7k2.qrouter.online/login");
+});
+
 test("runAuthzPipeline redirects unauthenticated dashboard pages to login", async () => {
   await forceAuthRequired();
 
