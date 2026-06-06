@@ -51,9 +51,7 @@ function isClientApiSurface(pathname: string): boolean {
     pathname.startsWith("/codex/") ||
     pathname === "/responses" ||
     pathname.startsWith("/responses/") ||
-    pathname.startsWith("/chat/") ||
-    pathname === "/api/v1" ||
-    pathname.startsWith("/api/v1/")
+    pathname.startsWith("/chat/")
   );
 }
 
