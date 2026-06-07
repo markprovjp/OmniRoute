@@ -43,6 +43,14 @@ type CustomerUsageResponse = {
   };
   requestQuota: UsageMetric;
   tokenQuota: UsageMetric & { reserved?: number; effectiveUsed?: number };
+  quotaUsage?: {
+    totalTokenUsed: number;
+    lifetimeTokenUsed: number;
+    dailyTokenUsed: number;
+    dailyReservedTokens: number;
+    hourlyTokenUsed: number;
+    hourlyReservedTokens: number;
+  };
   models: Array<{
     model: string;
     requests: number;
@@ -234,10 +242,37 @@ export default function CustomerUsagePageClient() {
                 sub={`${formatNumber(usage.tokens.daily_remaining)} remaining`}
               />
               <MetricTile
-                label="Total tokens"
-                value={formatNumber(usage.tokens.total)}
-                sub={`Checked ${formatDate(usage.checkedAt)}`}
+                label="Quota used total"
+                value={formatNumber(usage.quotaUsage?.totalTokenUsed ?? usage.tokens.total)}
+                sub={`${formatNumber(usage.tokens.total)} lifetime tokens`}
               />
+            </section>
+
+            <section className="grid gap-3 rounded-lg border border-border bg-surface p-4 text-sm shadow-soft sm:grid-cols-3">
+              <div>
+                <div className="text-text-muted">Lifetime used</div>
+                <div className="mt-1 font-semibold text-text-main">
+                  {formatNumber(usage.quotaUsage?.lifetimeTokenUsed ?? usage.tokens.total)}
+                </div>
+              </div>
+              <div>
+                <div className="text-text-muted">Daily quota used</div>
+                <div className="mt-1 font-semibold text-text-main">
+                  {formatNumber(
+                    (usage.quotaUsage?.dailyTokenUsed ?? usage.tokens.today) +
+                      (usage.quotaUsage?.dailyReservedTokens ?? 0)
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="text-text-muted">Hourly quota used</div>
+                <div className="mt-1 font-semibold text-text-main">
+                  {formatNumber(
+                    (usage.quotaUsage?.hourlyTokenUsed ?? usage.tokens.hour) +
+                      (usage.quotaUsage?.hourlyReservedTokens ?? 0)
+                  )}
+                </div>
+              </div>
             </section>
 
             <section className="grid gap-4 lg:grid-cols-2">

@@ -1157,6 +1157,7 @@ export default function ApiManagerPageClient() {
               const hourTokenUsed =
                 (key.quota?.hour?.usedTokens ?? stats?.hourTokens ?? 0) +
                 (key.quota?.hour?.reservedTokens ?? 0);
+              const quotaTotalUsed = Math.max(displayTokenUsed, dayTokenUsed, hourTokenUsed);
               return (
                 <div
                   key={key.id}
@@ -1296,6 +1297,10 @@ export default function ApiManagerPageClient() {
                     </div>
                   </div>
                   <div className="flex flex-col justify-center gap-0.5 rounded-md border border-border/70 bg-surface/30 p-2 lg:col-span-3 lg:border-0 lg:bg-transparent lg:p-0">
+                    <div className="flex items-center justify-between gap-2 text-[10px] font-semibold text-text-main tabular-nums">
+                      <span>Total quota used</span>
+                      <span>{quotaTotalUsed.toLocaleString()} tokens</span>
+                    </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium tabular-nums">
                         {stats?.totalRequests ?? 0}{" "}

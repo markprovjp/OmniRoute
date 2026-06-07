@@ -75,6 +75,11 @@ async function getUsageResponse(request: Request) {
   const tokenLimit = toNumber(apiKey.tokenLimit) || null;
   const dailyTokenLimit = toNumber(apiKey.dailyTokenLimit) || quota.day?.tokenLimit || null;
   const hourlyTokenLimit = toNumber(apiKey.hourlyTokenLimit) || quota.hour?.tokenLimit || null;
+  const quotaTotalUsed = Math.max(
+    totalTokens,
+    (quota.day?.usedTokens ?? 0) + (quota.day?.reservedTokens ?? 0),
+    (quota.hour?.usedTokens ?? 0) + (quota.hour?.reservedTokens ?? 0)
+  );
   const requestsRemaining =
     requestLimit === null ? null : Math.max(0, requestLimit - requestsToday);
   const tokensRemaining = tokenLimit === null ? null : Math.max(0, tokenLimit - totalTokens);
@@ -135,6 +140,14 @@ async function getUsageResponse(request: Request) {
           totalGptTokens: measured.hourTokens,
         },
         byModel: serializedModels,
+      },
+      quotaUsage: {
+        totalTokenUsed: quotaTotalUsed,
+        lifetimeTokenUsed: totalTokens,
+        dailyTokenUsed: quota.day?.usedTokens ?? measured.todayTokens,
+        dailyReservedTokens: quota.day?.reservedTokens ?? 0,
+        hourlyTokenUsed: quota.hour?.usedTokens ?? measured.hourTokens,
+        hourlyReservedTokens: quota.hour?.reservedTokens ?? 0,
       },
       requestQuota: {
         limit: requestLimit,
