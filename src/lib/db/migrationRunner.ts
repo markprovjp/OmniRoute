@@ -351,6 +351,11 @@ function isSchemaAlreadyApplied(
       return !hasColumn(db, "files", "status");
     case "054":
       return hasColumn(db, "usage_history", "service_tier");
+    case "065":
+      return (
+        hasColumn(db, "provider_connections", "expired_retry_count") &&
+        hasColumn(db, "provider_connections", "expired_retry_at")
+      );
     default:
       return false;
   }

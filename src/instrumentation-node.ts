@@ -97,6 +97,7 @@ export async function registerNodejs(): Promise<void> {
     { ensurePersistentManagementPasswordHash },
     { skillExecutor },
     { registerBuiltinSkills },
+    { startRuntimeMaintenanceJob },
   ] = await Promise.all([
     import("@/lib/gracefulShutdown"),
     import("@/lib/apiBridgeServer"),
@@ -111,6 +112,7 @@ export async function registerNodejs(): Promise<void> {
     import("@/lib/auth/managementPassword"),
     import("@/lib/skills/executor"),
     import("@/lib/skills/builtins"),
+    import("@/lib/jobs/runtimeMaintenanceJob"),
   ]);
 
   initGracefulShutdown();
@@ -133,6 +135,8 @@ export async function registerNodejs(): Promise<void> {
     const { initBatchProcessor } = await import("@omniroute/open-sse/services/batchProcessor");
     initBatchProcessor();
     console.log("[STARTUP] Batch processor started");
+    startRuntimeMaintenanceJob();
+    console.log("[STARTUP] Runtime maintenance job started");
   }
 
   try {

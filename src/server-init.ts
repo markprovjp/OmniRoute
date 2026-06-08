@@ -14,6 +14,7 @@ import { registerDefaultGuardrails } from "./lib/guardrails";
 import { ensurePersistentManagementPasswordHash } from "./lib/auth/managementPassword";
 import { skillExecutor } from "./lib/skills/executor";
 import { registerBuiltinSkills } from "./lib/skills/builtins";
+import { startRuntimeMaintenanceJob } from "./lib/jobs/runtimeMaintenanceJob";
 import { createLogger } from "./shared/utils/logger";
 
 const startupLog = createLogger("server-init");
@@ -87,6 +88,7 @@ async function startServer() {
     startBudgetResetJob();
     startReasoningCacheCleanupJob();
     startRuntimeConfigHotReload();
+    startRuntimeMaintenanceJob();
     startupLog.info("Server started with cloud sync initialized");
 
     // Log server start event to audit log

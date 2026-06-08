@@ -59,6 +59,10 @@ test("v1 image models GET exposes image-only modalities for image-only models", 
   assert.deepEqual((byId.get("stability-ai/fast") as any).input_modalities, ["image"]);
 });
 
+test("v1 image generation route allows a 360s server window", () => {
+  assert.equal(imageRoute.maxDuration, 360);
+});
+
 test("v1 image generation POST accepts promptless requests for image-only models", async () => {
   await seedConnection("topaz", { apiKey: "topaz-key" });
 

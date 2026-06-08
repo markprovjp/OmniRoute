@@ -201,6 +201,59 @@ test("buildRefreshFailureUpdate preserves expired retry tracking", () => {
   assert.equal(update.expiredRetryAt, now);
 });
 
+test("checkConnection persists expired retry state and honors backoff", async () => {
+  await resetStorage();
+
+  const providerId = "custom-oauth-expired-retry";
+  let refreshCount = 0;
+
+  await withHttpServer(
+    (_req, res) => {
+      refreshCount += 1;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "temporary_failure" }));
+    },
+    async (tokenServer) => {
+      await withPatchedProvider(
+        providerId,
+        {
+          tokenUrl: `${tokenServer.url}/token`,
+          clientId: "expired-retry-client-id",
+          clientSecret: "expired-retry-client-secret",
+        },
+        async () => {
+          const connection = await providersDb.createProviderConnection({
+            provider: providerId,
+            authType: "oauth",
+            name: "Expired Retry Account",
+            email: "expired-retry@example.com",
+            accessToken: "expired-access-token",
+            refreshToken: "expired-refresh-token",
+            testStatus: "expired",
+            expiredRetryAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+            isActive: true,
+          });
+
+          await tokenHealthCheck.checkConnection(connection);
+
+          const afterFirst = await providersDb.getProviderConnectionById((connection as any).id);
+          assert.equal(refreshCount, 1);
+          assert.equal(afterFirst?.testStatus, "expired");
+          assert.equal(afterFirst?.expiredRetryCount, 1);
+          assert.ok(afterFirst?.expiredRetryAt);
+
+          await tokenHealthCheck.checkConnection(afterFirst);
+
+          const afterSecond = await providersDb.getProviderConnectionById((connection as any).id);
+          assert.equal(refreshCount, 1);
+          assert.equal(afterSecond?.expiredRetryCount, 1);
+          assert.equal(afterSecond?.expiredRetryAt, afterFirst?.expiredRetryAt);
+        }
+      );
+    }
+  );
+});
+
 test("checkConnection uses the resolved proxy payload when refreshing tokens", async () => {
   await resetStorage();
 

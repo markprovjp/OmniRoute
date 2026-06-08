@@ -40,6 +40,7 @@ test("handleImageGeneration routes OpenAI-compatible providers and forwards imag
       url: String(url),
       headers: options.headers,
       body: JSON.parse(String(options.body || "{}")),
+      signal: options.signal,
     };
 
     return new Response(
@@ -64,11 +65,13 @@ test("handleImageGeneration routes OpenAI-compatible providers and forwards imag
       },
       credentials: { apiKey: "image-key" },
       log: null,
+      signal: AbortSignal.timeout(360_000),
     });
 
     assert.equal(result.success, true);
     assert.equal(captured.url, "https://api.openai.com/v1/images/generations");
     assert.equal(captured.headers.Authorization, "Bearer image-key");
+    assert.equal(captured.signal instanceof AbortSignal, true);
     assert.deepEqual(captured.body, {
       model: "gpt-image-2",
       prompt: "city skyline",
@@ -1772,6 +1775,7 @@ test("handleImageGeneration routes codex image requests through /responses with 
       url: String(url),
       headers: options.headers,
       body: JSON.parse(String(options.body || "{}")),
+      signal: options.signal,
     };
     const sse = buildCodexSSE([
       {
@@ -1806,6 +1810,7 @@ test("handleImageGeneration routes codex image requests through /responses with 
     assert.equal(captured.url, "https://chatgpt.com/backend-api/codex/responses");
     assert.equal(captured.headers.Authorization, "Bearer codex-token");
     assert.equal(captured.headers["chatgpt-account-id"], "acct-123");
+    assert.equal(captured.signal instanceof AbortSignal, true);
     assert.equal(captured.body.model, "gpt-5.4");
     assert.equal(captured.body.stream, true);
     assert.equal(captured.body.store, false);
@@ -1814,6 +1819,31 @@ test("handleImageGeneration routes codex image requests through /responses with 
     assert.equal(captured.body.input[0].content[0].text, "Draw a happy red kitten");
     assert.equal(result.data.data[0].b64_json, "a2l0dGVu");
     assert.equal(result.data.data[0].revised_prompt, "happy red kitten");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration (codex) uses request timeout_ms for upstream abort budget", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedSignal;
+  globalThis.fetch = async (_url, options = {}) => {
+    capturedSignal = options.signal;
+    const sse = buildCodexSSE([
+      { type: "image_generation_call", id: "ig-timeout", status: "completed", result: "YWJj" },
+    ]);
+    return new Response(sse, { status: 200 });
+  };
+
+  try {
+    const result = await handleImageGeneration({
+      body: { model: "codex/gpt-5.4", prompt: "kitten", timeout_ms: 360000 },
+      credentials: { accessToken: "codex-token" },
+      log: null,
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(capturedSignal instanceof AbortSignal, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

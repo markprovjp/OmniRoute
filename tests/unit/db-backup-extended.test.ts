@@ -81,6 +81,21 @@ test("listDbBackups returns an empty list when the backup directory is missing",
   assert.deepEqual(backups, []);
 });
 
+test("getDbBackupMaxFiles defaults to a bounded runtime retention window", () => {
+  const original = process.env.DB_BACKUP_MAX_FILES;
+  delete process.env.DB_BACKUP_MAX_FILES;
+
+  try {
+    assert.equal(backupDb.getDbBackupMaxFiles(), 12);
+  } finally {
+    if (original === undefined) {
+      delete process.env.DB_BACKUP_MAX_FILES;
+    } else {
+      process.env.DB_BACKUP_MAX_FILES = original;
+    }
+  }
+});
+
 test(
   "restoreDbBackup rejects invalid identifiers and corrupt backup files",
   { skip: isWindows },

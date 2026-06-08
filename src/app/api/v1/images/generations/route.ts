@@ -22,6 +22,8 @@ import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { getAllCustomModels, resolveProxyForConnection } from "@/lib/localDb";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 
+export const maxDuration = 360;
+
 /**
  * Handle CORS preflight
  */

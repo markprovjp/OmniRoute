@@ -561,6 +561,8 @@ const CODEX_HOSTED_TOOL_TYPES: ReadonlySet<string> = new Set([
   "code_interpreter",
   "mcp",
   "local_shell",
+  "apply_patch",
+  "shell",
 ]);
 
 function normalizeCodexTools(

@@ -2296,13 +2296,16 @@ async function waitForImageViaWebSocket(
   });
 }
 
-// Default 3-minute wait for the async image_gen tool to produce an image
+// Default 6-minute wait for the async image_gen tool to produce an image
 // pointer over the celsius WebSocket. Tunable so deployments can stretch
 // during chatgpt.com queue-deep windows ("Lots of people are creating
 // images right now") without code changes.
-const DEFAULT_ASYNC_IMAGE_TIMEOUT_MS = 180_000;
+const DEFAULT_ASYNC_IMAGE_TIMEOUT_MS = 360_000;
 
-function configuredAsyncImageTimeoutMs(): number {
+function configuredAsyncImageTimeoutMs(requestedTimeoutMs?: unknown): number {
+  const requested = Number(requestedTimeoutMs);
+  if (Number.isFinite(requested) && requested > 0) return Math.floor(requested);
+
   const raw = Number(process.env.OMNIROUTE_CGPT_WEB_IMAGE_TIMEOUT_MS);
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_ASYNC_IMAGE_TIMEOUT_MS;
   return Math.floor(raw);
@@ -2695,11 +2698,15 @@ export class ChatGptWebExecutor extends BaseExecutor {
 
     let response: TlsFetchResult;
     try {
+      const imageGenerationTimeoutMs = configuredAsyncImageTimeoutMs(
+        (body as Record<string, unknown> | null)?.timeout_ms
+      );
+
       response = await tlsFetchChatGpt(CONV_URL, {
         method: "POST",
         headers,
         body: JSON.stringify(cgptBody),
-        timeoutMs: 120_000, // generations can take a while
+        timeoutMs: forImageGen ? imageGenerationTimeoutMs : 120_000,
         signal,
         // For real-time streaming, ask the TLS client to write the body to
         // a temp file and surface it as a ReadableStream as it arrives —
@@ -2781,7 +2788,11 @@ export class ChatGptWebExecutor extends BaseExecutor {
     };
     const imageResolver = makeImageResolver(resolverCtx);
     const pollAsyncImage = (conversationId: string) =>
-      pollForAsyncImage(conversationId, resolverCtx);
+      pollForAsyncImage(conversationId, resolverCtx, {
+        timeoutMs: configuredAsyncImageTimeoutMs(
+          (body as Record<string, unknown> | null)?.timeout_ms
+        ),
+      });
 
     let finalResponse: Response;
     if (stream) {

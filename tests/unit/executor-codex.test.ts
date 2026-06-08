@@ -1159,6 +1159,55 @@ test("CodexExecutor.transformRequest preserves namespace MCP tools and hosted to
   assert.deepEqual(result.tool_choice, { type: "function", name: "jira_get_issue" });
 });
 
+test("CodexExecutor.transformRequest preserves native custom and command tools in passthrough", () => {
+  const executor = new CodexExecutor();
+  const result = executor.transformRequest(
+    "gpt-5.4",
+    {
+      model: "gpt-5.4",
+      _nativeCodexPassthrough: true,
+      input: "edit a file",
+      tools: [
+        { type: "custom", name: "apply_patch", description: "Apply a freeform patch" },
+        { type: "command", name: "spawn_agent", description: "Run a subagent" },
+        { type: "unknown_tool", name: "drop_me" },
+      ],
+      tool_choice: { type: "custom", name: "apply_patch" },
+    },
+    false,
+    {}
+  );
+
+  assert.deepEqual(result.tools, [
+    { type: "custom", name: "apply_patch", description: "Apply a freeform patch" },
+    { type: "command", name: "spawn_agent", description: "Run a subagent" },
+  ]);
+  assert.deepEqual(result.tool_choice, { type: "custom", name: "apply_patch" });
+});
+
+test("CodexExecutor.transformRequest preserves native apply_patch and shell hosted tools", () => {
+  const executor = new CodexExecutor();
+  const result = executor.transformRequest(
+    "gpt-5.4",
+    {
+      model: "gpt-5.4",
+      _nativeCodexPassthrough: true,
+      input: "inspect and edit",
+      tools: [{ type: "apply_patch" }, { type: "shell" }, { type: "web_search_preview" }],
+      tool_choice: { type: "apply_patch" },
+    },
+    false,
+    {}
+  );
+
+  assert.deepEqual(result.tools, [
+    { type: "apply_patch" },
+    { type: "shell" },
+    { type: "web_search_preview" },
+  ]);
+  assert.deepEqual(result.tool_choice, { type: "apply_patch" });
+});
+
 test("CodexExecutor maps Codex websocket error events to response.failed SSE", () => {
   const raw = JSON.stringify({
     type: "error",

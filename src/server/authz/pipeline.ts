@@ -58,7 +58,9 @@ function isClientApiSurface(pathname: string): boolean {
 }
 
 function isCustomerUsagePath(pathname: string): boolean {
-  return pathname === "/usage" || pathname === "/api/customer/usage";
+  return (
+    pathname === "/usage" || pathname === "/api/customer/usage" || pathname === "/api/customer/logs"
+  );
 }
 
 function notFoundHostResponse(request: NextRequest, requestId: string): NextResponse {

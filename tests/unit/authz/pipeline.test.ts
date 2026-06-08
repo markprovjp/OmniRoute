@@ -52,6 +52,8 @@ test.beforeEach(() => {
 });
 
 test.after(() => {
+  core.resetDbInstance();
+  apiKeysDb.resetApiKeyState();
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
   if (ORIGINAL_JWT === undefined) delete process.env.JWT_SECRET;
   else process.env.JWT_SECRET = ORIGINAL_JWT;
@@ -105,6 +107,10 @@ test("runAuthzPipeline reserves customer host for the usage checker", async () =
     request("https://customer.qrouter.online/api/customer/usage", { method: "POST" }),
     { enforce: true }
   );
+  const logsApi = await pipeline.runAuthzPipeline(
+    request("https://customer.qrouter.online/api/customer/logs", { method: "POST" }),
+    { enforce: true }
+  );
   const dashboard = await pipeline.runAuthzPipeline(
     request("https://customer.qrouter.online/dashboard"),
     { enforce: true }
@@ -118,6 +124,8 @@ test("runAuthzPipeline reserves customer host for the usage checker", async () =
   assert.equal(usage.headers.get("x-omniroute-route-class"), "PUBLIC");
   assert.equal(usageApi.status, 200);
   assert.equal(usageApi.headers.get("x-omniroute-route-class"), "PUBLIC");
+  assert.equal(logsApi.status, 200);
+  assert.equal(logsApi.headers.get("x-omniroute-route-class"), "PUBLIC");
   assert.equal(dashboard.status, 404);
 });
 

@@ -179,6 +179,8 @@ const SCHEMA_SQL = `
     rate_limited_until TEXT,
     health_check_interval INTEGER,
     last_health_check_at TEXT,
+    expired_retry_count INTEGER,
+    expired_retry_at TEXT,
     last_tested TEXT,
     api_key TEXT,
     id_token TEXT,
@@ -307,6 +309,7 @@ const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_cl_timestamp ON call_logs(timestamp);
   CREATE INDEX IF NOT EXISTS idx_cl_status ON call_logs(status);
+  CREATE INDEX IF NOT EXISTS idx_cl_api_key_timestamp ON call_logs(api_key_id, timestamp DESC);
 
   CREATE TABLE IF NOT EXISTS proxy_logs (
     id TEXT PRIMARY KEY,
@@ -1497,6 +1500,7 @@ function migrateFromJson(db: SqliteDatabase, jsonPath: string) {
           scope, project_id, test_status, error_code, last_error,
           last_error_at, last_error_type, last_error_source, backoff_level,
           rate_limited_until, health_check_interval, last_health_check_at,
+          expired_retry_count, expired_retry_at,
           last_tested, api_key, id_token, provider_specific_data,
           expires_in, display_name, global_priority, default_model,
           token_type, consecutive_use_count, rate_limit_protection, last_used_at, created_at, updated_at
@@ -1506,6 +1510,7 @@ function migrateFromJson(db: SqliteDatabase, jsonPath: string) {
           @scope, @projectId, @testStatus, @errorCode, @lastError,
           @lastErrorAt, @lastErrorType, @lastErrorSource, @backoffLevel,
           @rateLimitedUntil, @healthCheckInterval, @lastHealthCheckAt,
+          @expiredRetryCount, @expiredRetryAt,
           @lastTested, @apiKey, @idToken, @providerSpecificData,
           @expiresIn, @displayName, @globalPriority, @defaultModel,
           @tokenType, @consecutiveUseCount, @rateLimitProtection, @lastUsedAt, @createdAt, @updatedAt
@@ -1537,6 +1542,8 @@ function migrateFromJson(db: SqliteDatabase, jsonPath: string) {
           rateLimitedUntil: conn.rateLimitedUntil || null,
           healthCheckInterval: conn.healthCheckInterval || null,
           lastHealthCheckAt: conn.lastHealthCheckAt || null,
+          expiredRetryCount: conn.expiredRetryCount || null,
+          expiredRetryAt: conn.expiredRetryAt || null,
           lastTested: conn.lastTested || null,
           apiKey: conn.apiKey || null,
           idToken: conn.idToken || null,

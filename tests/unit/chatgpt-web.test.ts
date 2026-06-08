@@ -31,6 +31,7 @@ async function withEnv(overrides, fn) {
     "NEXT_PUBLIC_BASE_URL",
     "BASE_URL",
     "PORT",
+    "OMNIROUTE_CGPT_WEB_IMAGE_TIMEOUT_MS",
   ];
   const previous = new Map(keys.map((key) => [key, process.env[key]]));
 
@@ -2334,6 +2335,45 @@ test("Image gen: prior data: image URIs are stripped from history before upstrea
     const allParts = JSON.stringify(parsed.messages);
     assert.doesNotMatch(allParts, /data:image/, "no data: URI in upstream body");
     assert.match(allParts, /generated image/, "placeholder is present");
+  } finally {
+    m.restore();
+  }
+});
+
+test("Image gen: conversation fetch uses 360s image timeout by default and accepts request override", async () => {
+  reset();
+  const observedTimeouts: number[] = [];
+  const m = installMockFetch({
+    conv: { status: 503, error: "image queue timeout probe" },
+    onConv(opts) {
+      observedTimeouts.push(opts.timeoutMs);
+    },
+  });
+
+  try {
+    const executor = new ChatGptWebExecutor();
+    await executor.execute({
+      model: "gpt-5.3-instant",
+      body: { messages: [{ role: "user", content: "draw a kitten" }] },
+      stream: false,
+      credentials: { apiKey: "test" },
+      signal: AbortSignal.timeout(10_000),
+      log: null,
+    });
+
+    await executor.execute({
+      model: "gpt-5.3-instant",
+      body: {
+        timeout_ms: 420_000,
+        messages: [{ role: "user", content: "draw a kitten in watercolor" }],
+      },
+      stream: false,
+      credentials: { apiKey: "test" },
+      signal: AbortSignal.timeout(10_000),
+      log: null,
+    });
+
+    assert.deepEqual(observedTimeouts, [360_000, 420_000]);
   } finally {
     m.restore();
   }

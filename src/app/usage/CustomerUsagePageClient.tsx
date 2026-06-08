@@ -1,7 +1,15 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, Gauge, KeyRound, Loader2, RefreshCw } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Clock3,
+  Gauge,
+  KeyRound,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
 
 type UsageMetric = {
   limit: number | null;
@@ -61,6 +69,40 @@ type CustomerUsageResponse = {
   }>;
 };
 
+type CustomerRequestLog = {
+  id: string;
+  timestamp: string | null;
+  method: string | null;
+  path: string | null;
+  status: number;
+  outcome: "success" | "error";
+  model: string;
+  requestType: string | null;
+  durationMs: number;
+  tokens: {
+    input: number;
+    output: number;
+    cacheRead: number | null;
+    cacheWrite: number | null;
+    reasoning: number | null;
+    compressed: number | null;
+    total: number;
+  };
+  cacheSource: string;
+  error: string | null;
+};
+
+type CustomerLogsResponse = {
+  success: boolean;
+  checkedAt: string;
+  logs: CustomerRequestLog[];
+  summary: {
+    returned: number;
+    errors: number;
+    averageLatencyMs: number | null;
+  };
+};
+
 function formatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined) return "Unlimited";
   return new Intl.NumberFormat("en-US").format(value);
@@ -76,6 +118,12 @@ function formatDate(value: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function formatLatency(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "-";
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}s`;
+  return `${Math.round(value)}ms`;
 }
 
 function quotaPercent(metric: UsageMetric): number | null {
@@ -125,6 +173,8 @@ export default function CustomerUsagePageClient() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<CustomerUsageResponse | null>(null);
+  const [logs, setLogs] = useState<CustomerLogsResponse | null>(null);
+  const [logsError, setLogsError] = useState<string | null>(null);
 
   const keyStateClass = useMemo(() => {
     if (!usage) return "bg-bg-subtle text-text-muted";
@@ -139,24 +189,42 @@ export default function CustomerUsagePageClient() {
     if (!key) {
       setError("Enter a share key first.");
       setUsage(null);
+      setLogs(null);
       return;
     }
 
     setLoading(true);
     setError(null);
+    setLogsError(null);
     try {
-      const response = await fetch("/api/customer/usage", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ apiKey: key }),
-      });
+      const [response, logsResponse] = await Promise.all([
+        fetch("/api/customer/usage", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ apiKey: key }),
+        }),
+        fetch("/api/customer/logs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ apiKey: key, limit: 50 }),
+        }),
+      ]);
       const body = await response.json();
       if (!response.ok) {
         throw new Error(body?.error || body?.message || "Key check failed.");
       }
+
       setUsage(body as CustomerUsageResponse);
+      const logsBody = await logsResponse.json();
+      if (logsResponse.ok) {
+        setLogs(logsBody as CustomerLogsResponse);
+      } else {
+        setLogs(null);
+        setLogsError(logsBody?.error || logsBody?.message || "Could not load request logs.");
+      }
     } catch (err) {
       setUsage(null);
+      setLogs(null);
       setError(err instanceof Error ? err.message : "Key check failed.");
     } finally {
       setLoading(false);
@@ -319,6 +387,102 @@ export default function CustomerUsagePageClient() {
                 </div>
               </section>
             ) : null}
+
+            <section className="overflow-hidden rounded-lg border border-border bg-surface shadow-soft">
+              <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="font-medium text-text-main">Recent request logs</div>
+                <div className="flex flex-wrap gap-2 text-xs text-text-muted">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-bg-subtle px-2.5 py-1">
+                    <Clock3 className="h-3.5 w-3.5" aria-hidden="true" />
+                    Avg {formatLatency(logs?.summary.averageLatencyMs)}
+                  </span>
+                  <span className="rounded-full bg-bg-subtle px-2.5 py-1">
+                    {formatNumber(logs?.summary.returned ?? 0)} shown
+                  </span>
+                  <span className="rounded-full bg-bg-subtle px-2.5 py-1">
+                    {formatNumber(logs?.summary.errors ?? 0)} errors
+                  </span>
+                </div>
+              </div>
+
+              {logsError ? (
+                <div className="m-4 flex items-center gap-2 rounded-lg border border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-700 dark:text-yellow-300">
+                  <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  {logsError}
+                </div>
+              ) : null}
+
+              {logs && logs.logs.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[860px] text-left text-sm">
+                    <thead className="bg-bg-subtle text-text-muted">
+                      <tr>
+                        <th className="px-4 py-3 font-medium">Time</th>
+                        <th className="px-4 py-3 font-medium">Status</th>
+                        <th className="px-4 py-3 font-medium">Model</th>
+                        <th className="px-4 py-3 font-medium">Route</th>
+                        <th className="px-4 py-3 font-medium">Latency</th>
+                        <th className="px-4 py-3 font-medium">Tokens</th>
+                        <th className="px-4 py-3 font-medium">Cache</th>
+                        <th className="px-4 py-3 font-medium">Error</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {logs.logs.map((entry) => (
+                        <tr key={entry.id} className="border-t border-border">
+                          <td className="whitespace-nowrap px-4 py-3 text-text-muted">
+                            {formatDate(entry.timestamp)}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
+                                entry.outcome === "success"
+                                  ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                                  : "bg-red-500/10 text-red-600 dark:text-red-400"
+                              }`}
+                            >
+                              {entry.status || "-"}
+                            </span>
+                          </td>
+                          <td className="max-w-56 px-4 py-3 font-medium text-text-main">
+                            <span className="block truncate">{entry.model}</span>
+                          </td>
+                          <td className="px-4 py-3 text-text-muted">
+                            <div className="font-medium text-text-main">
+                              {entry.method || "POST"} {entry.path || "/v1"}
+                            </div>
+                            <div className="text-xs">{entry.requestType || "request"}</div>
+                          </td>
+                          <td className="px-4 py-3 text-text-muted">
+                            {formatLatency(entry.durationMs)}
+                          </td>
+                          <td className="px-4 py-3 text-text-muted">
+                            <div>{formatNumber(entry.tokens.total)} total</div>
+                            <div className="text-xs">
+                              {formatNumber(entry.tokens.input)} in ·{" "}
+                              {formatNumber(entry.tokens.output)} out
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-text-muted">
+                            <div>{entry.cacheSource}</div>
+                            <div className="text-xs">
+                              read {formatNumber(entry.tokens.cacheRead ?? 0)}
+                            </div>
+                          </td>
+                          <td className="max-w-64 px-4 py-3 text-text-muted">
+                            <span className="block truncate">{entry.error || "-"}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="px-4 py-8 text-center text-sm text-text-muted">
+                  No recent requests for this key.
+                </div>
+              )}
+            </section>
           </>
         ) : null}
       </div>

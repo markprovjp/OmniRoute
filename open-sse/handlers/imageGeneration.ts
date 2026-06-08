@@ -85,6 +85,7 @@ const OPENAI_IMAGE_TO_IMAGE_MODELS = new Set([
 ]);
 
 const IMAGE_ASPECT_RATIO_PATTERN = /^\d+:\d+$/;
+const DEFAULT_IMAGE_GENERATION_TIMEOUT_MS = 360_000;
 
 function normalizeImageAspectRatio(value: unknown, fallbackSize: unknown): string {
   if (typeof value === "string") {
@@ -265,6 +266,7 @@ export async function handleImageGeneration({
       body,
       credentials,
       log,
+      signal,
     });
   }
 
@@ -399,6 +401,7 @@ export async function handleImageGeneration({
       body,
       credentials,
       log,
+      signal,
     });
   }
 
@@ -426,7 +429,15 @@ export async function handleImageGeneration({
     });
   }
 
-  return handleOpenAIImageGeneration({ model, provider, providerConfig, body, credentials, log });
+  return handleOpenAIImageGeneration({
+    model,
+    provider,
+    providerConfig,
+    body,
+    credentials,
+    log,
+    signal,
+  });
 }
 
 function normalizeKieImageResult(recordData: unknown): string[] {
@@ -473,7 +484,7 @@ async function handleKieImageGeneration({
 }: KieImageOptions) {
   const startTime = Date.now();
   const token = credentials?.apiKey || credentials?.accessToken;
-  const timeoutMs = normalizePositiveNumber(body.timeout_ms, 300000);
+  const timeoutMs = normalizePositiveNumber(body.timeout_ms, DEFAULT_IMAGE_GENERATION_TIMEOUT_MS);
   const pollIntervalMs = normalizePositiveNumber(body.poll_interval_ms, 2500);
   const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
   const size = typeof body.size === "string" ? body.size : undefined;
@@ -807,6 +818,7 @@ async function handleOpenAIImageGeneration({
   body,
   credentials,
   log,
+  signal = null,
 }) {
   const startTime = Date.now();
 
@@ -871,7 +883,8 @@ async function handleOpenAIImageGeneration({
     headers,
     requestBody,
     provider,
-    log
+    log,
+    signal
   );
 
   // Fallback for providers with fallbackUrl (e.g., Nebius)
@@ -888,7 +901,8 @@ async function handleOpenAIImageGeneration({
       headers,
       requestBody,
       provider,
-      log
+      log,
+      signal
     );
   }
 
@@ -1009,6 +1023,7 @@ async function handleChatGptWebImageGeneration({
       model,
       body: {
         messages: [{ role: "user", content: buildChatGptWebImagePrompt(body) }],
+        timeout_ms: body.timeout_ms,
       },
       stream: false,
       credentials,
@@ -1109,11 +1124,15 @@ export async function handleImageEdit({
 }: {
   provider: string;
   model: string;
-  body: Record<string, any>;
+  body: Record<string, unknown>;
   imageBytes: Buffer;
   imageMime?: string; // accepted for symmetry with route layer; not used
-  credentials: any;
-  log: any;
+  credentials: { apiKey?: string } | null;
+  log: {
+    info?: (tag: string, message: string) => void;
+    warn?: (tag: string, message: string) => void;
+    error?: (tag: string, message: string) => void;
+  } | null;
   signal?: AbortSignal | null;
   clientHeaders?: Record<string, string> | null;
 }) {
@@ -1850,7 +1869,7 @@ async function handleTopazImageGeneration({
 }
 
 async function pollBlackForestLabsResult({ pollingUrl, token, body, log }) {
-  const timeoutMs = normalizePositiveNumber(body.timeout_ms, 300000);
+  const timeoutMs = normalizePositiveNumber(body.timeout_ms, DEFAULT_IMAGE_GENERATION_TIMEOUT_MS);
   const pollIntervalMs = normalizePositiveNumber(body.poll_interval_ms, 1500);
   const deadline = Date.now() + timeoutMs;
 
@@ -2175,6 +2194,7 @@ async function handleCodexImageGeneration({
   body,
   credentials,
   log,
+  signal = null,
 }) {
   const startTime = Date.now();
   const prompt = typeof body.prompt === "string" ? body.prompt : "";
@@ -2263,13 +2283,18 @@ async function handleCodexImageGeneration({
   }
 
   const collected: Array<{ b64_json: string; revised_prompt?: string }> = [];
+  const timeoutMs = normalizePositiveNumber(body.timeout_ms, DEFAULT_IMAGE_GENERATION_TIMEOUT_MS);
   for (let i = 0; i < requestedCount; i++) {
     let response: Response;
     try {
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      const fetchSignal =
+        signal instanceof AbortSignal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
       response = await fetch(providerConfig.baseUrl, {
         method: "POST",
         headers,
         body: JSON.stringify(upstreamBody),
+        signal: fetchSignal,
       });
     } catch (err) {
       if (log) log.error("IMAGE", `${provider} fetch error: ${(err as Error).message}`);
@@ -2387,12 +2412,13 @@ function saveImageErrorResult({ provider, model, status, startTime, error, reque
 /**
  * Fetch a single image endpoint and normalize response
  */
-async function fetchImageEndpoint(url, headers, body, provider, log) {
+async function fetchImageEndpoint(url, headers, body, provider, log, signal = null) {
   try {
     const response = await fetch(url, {
       method: "POST",
       headers,
       body,
+      ...(signal instanceof AbortSignal ? { signal } : {}),
     });
 
     if (!response.ok) {
@@ -2678,7 +2704,10 @@ async function handleNanoBananaImageGeneration({
 
     const timeoutMs = normalizePositiveNumber(
       body.timeout_ms,
-      normalizePositiveNumber(process.env.NANOBANANA_POLL_TIMEOUT_MS, 120000)
+      normalizePositiveNumber(
+        process.env.NANOBANANA_POLL_TIMEOUT_MS,
+        DEFAULT_IMAGE_GENERATION_TIMEOUT_MS
+      )
     );
     const pollIntervalMs = normalizePositiveNumber(
       body.poll_interval_ms,

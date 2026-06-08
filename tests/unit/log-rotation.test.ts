@@ -8,6 +8,7 @@ import {
   readdirSync,
   mkdtempSync,
   rmdirSync,
+  utimesSync,
 } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -148,6 +149,49 @@ test("periodic timer actually fires and rotates a large log", async () => {
   } finally {
     closeLogRotation();
     delete process.env.APP_LOG_ROTATION_CHECK_INTERVAL_MS;
+    delete process.env.APP_LOG_MAX_FILE_SIZE;
+    for (const f of readdirSync(dir)) {
+      unlinkSync(join(dir, f));
+    }
+    rmdirSync(dir);
+  }
+});
+
+test("runLogRotationMaintenance enforces retention and overflow without restart", async () => {
+  const { runLogRotationMaintenance } = await import("../../src/lib/logRotation.ts");
+  const dir = mkdtempSync(join(tmpdir(), `rot-test-maint-${Date.now()}-`));
+  const logPath = join(dir, "app.log");
+  const oldRotated = join(dir, "app.2026-01-01_000000.log");
+  const newerRotated = join(dir, "app.2026-01-02_000000.log");
+  const newestRotated = join(dir, "app.2026-01-03_000000.log");
+  const oldTime = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  const freshTime = new Date();
+
+  process.env.APP_LOG_TO_FILE = "true";
+  process.env.APP_LOG_FILE_PATH = logPath;
+  process.env.APP_LOG_RETENTION_DAYS = "1";
+  process.env.APP_LOG_MAX_FILES = "1";
+  process.env.APP_LOG_MAX_FILE_SIZE = "10M";
+
+  try {
+    writeFileSync(logPath, "active");
+    writeFileSync(oldRotated, "old");
+    writeFileSync(newerRotated, "newer");
+    writeFileSync(newestRotated, "newest");
+    utimesSync(oldRotated, oldTime, oldTime);
+    utimesSync(newerRotated, freshTime, freshTime);
+    utimesSync(newestRotated, new Date(Date.now() + 1000), new Date(Date.now() + 1000));
+
+    runLogRotationMaintenance();
+
+    assert.equal(existsSync(oldRotated), false, "expired rotated log should be removed");
+    assert.equal(existsSync(newerRotated), false, "overflow rotated log should be removed");
+    assert.equal(existsSync(newestRotated), true, "newest rotated log should remain");
+  } finally {
+    delete process.env.APP_LOG_TO_FILE;
+    delete process.env.APP_LOG_FILE_PATH;
+    delete process.env.APP_LOG_RETENTION_DAYS;
+    delete process.env.APP_LOG_MAX_FILES;
     delete process.env.APP_LOG_MAX_FILE_SIZE;
     for (const f of readdirSync(dir)) {
       unlinkSync(join(dir, f));

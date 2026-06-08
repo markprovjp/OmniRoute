@@ -21,7 +21,7 @@ type CountRow = { cnt?: number };
 
 let _lastBackupAt = 0;
 const BACKUP_THROTTLE_MS = 60 * 60 * 1000; // 60 minutes
-const MAX_DB_BACKUPS = 20;
+const MAX_DB_BACKUPS = 12;
 const DEFAULT_DB_BACKUP_RETENTION_DAYS = 0;
 const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 

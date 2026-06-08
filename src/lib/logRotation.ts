@@ -175,23 +175,27 @@ export function initLogRotation(): void {
   const config = getLogConfig();
   if (!config.logToFile) return;
 
+  runLogRotationMaintenance();
+
+  const intervalMs = getAppLogRotationCheckInterval();
+  rotationTimer = setInterval(() => runLogRotationMaintenance(), intervalMs);
+  rotationTimer.unref?.();
+}
+
+/**
+ * Run one app-log maintenance pass.
+ *
+ * Exposed for runtimeMaintenanceJob so long-lived processes enforce age/count
+ * retention even if they are never restarted.
+ */
+export function runLogRotationMaintenance(): void {
+  const config = getLogConfig();
+  if (!config.logToFile) return;
+
   ensureLogDir(config.logFilePath);
   rotateIfNeeded(config.logFilePath, config.maxFileSize);
   cleanupOldLogs(config.logFilePath, config.retentionDays);
   cleanupOverflowLogs(config.logFilePath, config.maxFiles);
-
-  const intervalMs = getAppLogRotationCheckInterval();
-  rotationTimer = setInterval(
-    (filePath: string, maxSize: number, maxFiles: number) => {
-      rotateIfNeeded(filePath, maxSize);
-      cleanupOverflowLogs(filePath, maxFiles);
-    },
-    intervalMs,
-    config.logFilePath,
-    config.maxFileSize,
-    config.maxFiles
-  );
-  rotationTimer.unref?.();
 }
 
 /**

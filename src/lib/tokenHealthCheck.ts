@@ -182,13 +182,13 @@ export function clearHealthCheckLogCache() {
 
 declare global {
   var __omnirouteTokenHC:
-    | { initialized: boolean; interval: ReturnType<typeof setInterval> | null }
+    | { initialized: boolean; interval: ReturnType<typeof setInterval> | null; sweeping: boolean }
     | undefined;
 }
 
 function getHCState() {
   if (!globalThis.__omnirouteTokenHC) {
-    globalThis.__omnirouteTokenHC = { initialized: false, interval: null };
+    globalThis.__omnirouteTokenHC = { initialized: false, interval: null, sweeping: false };
   }
   return globalThis.__omnirouteTokenHC;
 }
@@ -229,6 +229,10 @@ export function stopTokenHealthCheck() {
 
 // ── Core sweep ───────────────────────────────────────────────────────────────
 async function sweep() {
+  const state = getHCState();
+  if (state.sweeping) return;
+  state.sweeping = true;
+
   try {
     const connections = await getProviderConnections({ authType: "oauth" });
 
@@ -252,6 +256,8 @@ async function sweep() {
     }
   } catch (err) {
     logError(`${LOG_PREFIX} Sweep error:`, err.message);
+  } finally {
+    state.sweeping = false;
   }
 }
 
@@ -278,6 +284,11 @@ export async function checkConnection(conn) {
     const lastRetry = conn.expiredRetryAt ? new Date(conn.expiredRetryAt).getTime() : 0;
     const backoffMs = EXPIRED_RETRY_BACKOFF_MIN * 60 * 1000 * Math.pow(2, retryCount);
     if (Date.now() - lastRetry < backoffMs) return;
+
+    await updateProviderConnection(conn.id, {
+      expiredRetryCount: retryCount + 1,
+      expiredRetryAt: new Date().toISOString(),
+    });
 
     log(
       `${LOG_PREFIX} Retrying expired ${conn.provider}/${getConnectionLogLabel(conn)} (attempt ${retryCount + 1}/${EXPIRED_RETRY_MAX})`
