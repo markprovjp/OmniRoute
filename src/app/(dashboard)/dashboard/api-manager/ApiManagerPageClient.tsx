@@ -13,11 +13,11 @@ import {
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useTranslations } from "next-intl";
 import { getProviderDisplayName } from "@/lib/display/names";
+import { PREPAID_TOKEN_PACKAGES, type ApiKeyBillingMode } from "@/shared/constants/apiKeyBilling";
 
 // Constants for validation
 const MAX_KEY_NAME_LENGTH = 200;
 const MAX_SELECTED_MODELS = 500;
-const TOKEN_BUMP_PRESETS = [50_000_000, 100_000_000, 200_000_000, 500_000_000] as const;
 
 // Debounce hook for search optimization
 function useDebouncedValue<T>(value: T, delay: number): T {
@@ -301,9 +301,8 @@ export default function ApiManagerPageClient() {
   const [newKeyName, setNewKeyName] = useState("");
   const [newCustomerName, setNewCustomerName] = useState("");
   const [newInternalNote, setNewInternalNote] = useState("");
-  const [newTokenLimit, setNewTokenLimit] = useState("");
-  const [newDailyTokenLimit, setNewDailyTokenLimit] = useState("");
-  const [newHourlyTokenLimit, setNewHourlyTokenLimit] = useState("");
+  const [newBillingMode, setNewBillingMode] = useState<ApiKeyBillingMode>("prepaid");
+  const [newTokenLimit, setNewTokenLimit] = useState(String(PREPAID_TOKEN_PACKAGES[0]));
   const [newRequestLimitDaily, setNewRequestLimitDaily] = useState("");
   const [newExpiresAt, setNewExpiresAt] = useState("");
   const [createdKey, setCreatedKey] = useState<string | null>(null);
@@ -514,13 +513,11 @@ export default function ApiManagerPageClient() {
           name: sanitizedName,
           customerName: sanitizeInput(newCustomerName || sanitizedName),
           internalNote: newInternalNote.trim() ? sanitizeNote(newInternalNote) : null,
-          tokenLimit: newTokenLimit.trim() ? Math.max(0, Math.floor(Number(newTokenLimit))) : null,
-          dailyTokenLimit: newDailyTokenLimit.trim()
-            ? Math.max(0, Math.floor(Number(newDailyTokenLimit)))
-            : null,
-          hourlyTokenLimit: newHourlyTokenLimit.trim()
-            ? Math.max(0, Math.floor(Number(newHourlyTokenLimit)))
-            : null,
+          billingMode: newBillingMode,
+          tokenLimit:
+            newBillingMode === "prepaid" ? Math.max(0, Math.floor(Number(newTokenLimit))) : null,
+          dailyTokenLimit: null,
+          hourlyTokenLimit: null,
           maxRequestsPerDay: newRequestLimitDaily.trim()
             ? Math.max(0, Math.floor(Number(newRequestLimitDaily)))
             : null,
@@ -535,9 +532,8 @@ export default function ApiManagerPageClient() {
         setNewKeyName("");
         setNewCustomerName("");
         setNewInternalNote("");
-        setNewTokenLimit("");
-        setNewDailyTokenLimit("");
-        setNewHourlyTokenLimit("");
+        setNewBillingMode("prepaid");
+        setNewTokenLimit(String(PREPAID_TOKEN_PACKAGES[0]));
         setNewRequestLimitDaily("");
         setNewExpiresAt("");
         setShowAddModal(false);
@@ -870,6 +866,7 @@ export default function ApiManagerPageClient() {
         summary.limitedKeys += hasQuota ? 1 : 0;
         summary.todayRequests += usage?.todayRequests || 0;
         summary.todayTokens += usage?.todayTokens || 0;
+        summary.totalTokens += Math.max(key.tokenUsed ?? 0, usage?.totalTokens ?? 0);
         summary.reservedTokens +=
           key.quota?.day?.reservedTokens ?? key.quota?.hour?.reservedTokens ?? 0;
         return summary;
@@ -879,6 +876,7 @@ export default function ApiManagerPageClient() {
         limitedKeys: 0,
         todayRequests: 0,
         todayTokens: 0,
+        totalTokens: 0,
         reservedTokens: 0,
       }
     );
@@ -980,8 +978,8 @@ export default function ApiManagerPageClient() {
                 <span className="material-symbols-outlined text-cyan-500 text-lg">token</span>
               </div>
               <div>
-                <p className="text-2xl font-bold">{managerSummary.todayTokens.toLocaleString()}</p>
-                <p className="text-xs text-text-muted">Tokens today</p>
+                <p className="text-2xl font-bold">{managerSummary.totalTokens.toLocaleString()}</p>
+                <p className="text-xs text-text-muted">Total tokens used</p>
               </div>
             </div>
           </Card>
@@ -1488,9 +1486,8 @@ export default function ApiManagerPageClient() {
           setNewKeyName("");
           setNewCustomerName("");
           setNewInternalNote("");
-          setNewTokenLimit("");
-          setNewDailyTokenLimit("");
-          setNewHourlyTokenLimit("");
+          setNewBillingMode("prepaid");
+          setNewTokenLimit(String(PREPAID_TOKEN_PACKAGES[0]));
           setNewRequestLimitDaily("");
           setNewExpiresAt("");
           setNameError(null);
@@ -1527,62 +1524,84 @@ export default function ApiManagerPageClient() {
                 maxLength={MAX_KEY_NAME_LENGTH}
               />
             </div>
-            <div className="sm:row-span-2">
-              <label className="text-sm font-medium text-text-main mb-1.5 block">
-                Lifetime tokens
-              </label>
-              <Input
-                value={newTokenLimit}
-                onChange={(e) => setNewTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
-                placeholder="Unlimited"
-                inputMode="numeric"
-              />
-              <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                {TOKEN_BUMP_PRESETS.map((amount) => (
-                  <button
-                    key={amount}
-                    type="button"
-                    onClick={() => setNewTokenLimit(formatNumberInput(amount))}
-                    className="rounded-md border border-border px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
-                  >
-                    {formatCompactTokens(amount)}
-                  </button>
-                ))}
+            <div className="sm:col-span-2">
+              <label className="text-sm font-medium text-text-main mb-1.5 block">Key type</label>
+              <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Key type">
+                {[
+                  {
+                    value: "prepaid" as const,
+                    icon: "payments",
+                    label: "Prepaid token key",
+                    description: "Stops when the purchased token balance is exhausted.",
+                  },
+                  {
+                    value: "system" as const,
+                    icon: "admin_panel_settings",
+                    label: "System key",
+                    description: "Internal key with no lifetime token cap.",
+                  },
+                ].map((option) => {
+                  const selected = newBillingMode === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => {
+                        setNewBillingMode(option.value);
+                        setNewTokenLimit(
+                          option.value === "prepaid" ? String(PREPAID_TOKEN_PACKAGES[0]) : ""
+                        );
+                      }}
+                      className={`flex min-h-24 items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
+                        selected
+                          ? "border-primary bg-primary/10 text-text-main"
+                          : "border-border bg-surface/30 text-text-muted hover:border-primary/40"
+                      }`}
+                    >
+                      <span className="material-symbols-outlined mt-0.5 text-lg">
+                        {option.icon}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold">{option.label}</span>
+                        <span className="mt-1 block text-xs leading-5">{option.description}</span>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-              <p className="mt-1.5 text-xs text-text-muted">
-                Presets create paid quota immediately; leave empty for unlimited.
-              </p>
             </div>
-            <div>
-              <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/day</label>
-              <Input
-                value={newDailyTokenLimit}
-                onChange={(e) => setNewDailyTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
-                placeholder="Unlimited"
-                inputMode="numeric"
-              />
-              <div className="mt-2 grid grid-cols-2 gap-1.5">
-                {[50_000_000, 100_000_000].map((amount) => (
-                  <button
-                    key={amount}
-                    type="button"
-                    onClick={() => setNewDailyTokenLimit(formatNumberInput(amount))}
-                    className="rounded-md border border-border px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
-                  >
-                    {formatCompactTokens(amount)}/day
-                  </button>
-                ))}
+            {newBillingMode === "prepaid" && (
+              <div className="sm:col-span-2">
+                <label className="text-sm font-medium text-text-main mb-1.5 block">
+                  Token package
+                </label>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+                  {PREPAID_TOKEN_PACKAGES.map((amount) => {
+                    const selected = Number(newTokenLimit) === amount;
+                    return (
+                      <button
+                        key={amount}
+                        type="button"
+                        onClick={() => setNewTokenLimit(String(amount))}
+                        className={`min-h-11 rounded-md border px-2 py-2 text-sm font-semibold tabular-nums transition-colors ${
+                          selected
+                            ? "border-primary bg-primary text-white"
+                            : "border-border bg-surface/30 text-text-muted hover:border-primary/40 hover:text-primary"
+                        }`}
+                      >
+                        {formatCompactTokens(amount)}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-2 text-xs text-text-muted">
+                  Input and output tokens are accumulated together. Requests stop at the package
+                  limit.
+                </p>
               </div>
-            </div>
-            <div>
-              <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/hour</label>
-              <Input
-                value={newHourlyTokenLimit}
-                onChange={(e) => setNewHourlyTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
-                placeholder="Unlimited"
-                inputMode="numeric"
-              />
-            </div>
+            )}
             <div>
               <label className="text-sm font-medium text-text-main mb-1.5 block">
                 Requests/day
@@ -1664,9 +1683,8 @@ export default function ApiManagerPageClient() {
                 setNewKeyName("");
                 setNewCustomerName("");
                 setNewInternalNote("");
-                setNewTokenLimit("");
-                setNewDailyTokenLimit("");
-                setNewHourlyTokenLimit("");
+                setNewBillingMode("prepaid");
+                setNewTokenLimit(String(PREPAID_TOKEN_PACKAGES[0]));
                 setNewRequestLimitDaily("");
                 setNewExpiresAt("");
                 setNameError(null);
@@ -2433,7 +2451,7 @@ const PermissionsModal = memo(function PermissionsModal({
               Used: {totalTokenUsed.toLocaleString()} tokens
             </p>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
-              {TOKEN_BUMP_PRESETS.map((amount) => (
+              {PREPAID_TOKEN_PACKAGES.map((amount) => (
                 <button
                   key={amount}
                   type="button"

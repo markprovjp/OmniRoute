@@ -195,52 +195,47 @@ test("Chat→Responses: string tool_choice passes through unchanged", () => {
   assert.equal((result as any).tool_choice, "required");
 });
 
-test("Responses→Chat: built-in tool_choice type throws unsupported error", () => {
+test("Responses→Chat: built-in tool_choice type is preserved", () => {
   const body = {
     model: "gpt-4",
     input: "hello",
     tool_choice: { type: "web_search_preview" },
   };
-  assert.throws(
-    () => openaiResponsesToOpenAIRequest(null, body, null, null),
-    (err) => (err as any).message.includes("web_search_preview")
-  );
+  const result = openaiResponsesToOpenAIRequest(null, body, null, null) as any;
+  assert.deepEqual(result.tool_choice, { type: "web_search_preview" });
 });
 
-test("Responses→Chat: web_search tool type throws unsupported error", () => {
+test("Responses→Chat: web_search tool type is preserved", () => {
   const body = {
     model: "gpt-4",
     input: "search for cats",
     tools: [{ type: "web_search", search_context_size: "medium" }],
   };
-  assert.throws(
-    () => openaiResponsesToOpenAIRequest(null, body, null, null),
-    (err) => (err as any).message.includes("web_search")
-  );
+  const result = openaiResponsesToOpenAIRequest(null, body, null, null) as any;
+  assert.equal(result.tools.length, 1);
+  assert.equal(result.tools[0].type, "web_search");
 });
 
-test("Responses→Chat: computer tool type throws unsupported error", () => {
+test("Responses→Chat: computer tool type is preserved", () => {
   const body = {
     model: "gpt-4",
     input: "click button",
     tools: [{ type: "computer" }],
   };
-  assert.throws(
-    () => openaiResponsesToOpenAIRequest(null, body, null, null),
-    (err) => (err as any).message.includes("computer")
-  );
+  const result = openaiResponsesToOpenAIRequest(null, body, null, null) as any;
+  assert.equal(result.tools.length, 1);
+  assert.equal(result.tools[0].type, "computer");
 });
 
-test("Responses→Chat: mcp tool type throws unsupported error", () => {
+test("Responses→Chat: mcp tool type is preserved", () => {
   const body = {
     model: "gpt-4",
     input: "hello",
     tools: [{ type: "mcp", server_label: "test", server_url: "https://example.com" }],
   };
-  assert.throws(
-    () => openaiResponsesToOpenAIRequest(null, body, null, null),
-    (err) => (err as any).message.includes("mcp")
-  );
+  const result = openaiResponsesToOpenAIRequest(null, body, null, null) as any;
+  assert.equal(result.tools.length, 1);
+  assert.equal(result.tools[0].type, "mcp");
 });
 
 test("Responses→Chat: non-string arguments are JSON-stringified", () => {

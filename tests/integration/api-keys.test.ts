@@ -133,6 +133,66 @@ test("POST /api/keys creates a key, preserves special characters, and persists n
   assert.equal(compliance.isNoLog(body.id), true);
 });
 
+test("POST /api/keys creates system and prepaid billing modes", async () => {
+  await enableManagementAuth();
+  await createManagementKey();
+
+  const systemResponse = await listRoute.POST(
+    await makeManagementSessionRequest("http://localhost/api/keys", {
+      method: "POST",
+      body: {
+        name: "Internal automation",
+        billingMode: "system",
+        tokenLimit: 100_000_000,
+      },
+    })
+  );
+  const systemBody = (await systemResponse.json()) as any;
+  const storedSystemKey = await apiKeysDb.getApiKeyById(systemBody.id);
+
+  assert.equal(systemResponse.status, 201);
+  assert.equal(storedSystemKey?.commercialKey, false);
+  assert.equal(storedSystemKey?.tokenLimit, null);
+
+  const prepaidResponse = await listRoute.POST(
+    await makeManagementSessionRequest("http://localhost/api/keys", {
+      method: "POST",
+      body: {
+        name: "Prepaid customer",
+        billingMode: "prepaid",
+        tokenLimit: 1_500_000_000,
+      },
+    })
+  );
+  const prepaidBody = (await prepaidResponse.json()) as any;
+  const storedPrepaidKey = await apiKeysDb.getApiKeyById(prepaidBody.id);
+
+  assert.equal(prepaidResponse.status, 201);
+  assert.equal(storedPrepaidKey?.commercialKey, true);
+  assert.equal(storedPrepaidKey?.tokenLimit, 1_500_000_000);
+});
+
+test("POST /api/keys rejects prepaid limits outside the supported packages", async () => {
+  await enableManagementAuth();
+  await createManagementKey();
+
+  const response = await listRoute.POST(
+    await makeManagementSessionRequest("http://localhost/api/keys", {
+      method: "POST",
+      body: {
+        name: "Invalid prepaid customer",
+        billingMode: "prepaid",
+        tokenLimit: 123_000_000,
+      },
+    })
+  );
+  const body = (await response.json()) as any;
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error?.message, "Invalid request");
+  assert.match(body.error?.details?.[0]?.message, /supported prepaid package/i);
+});
+
 test("POST /api/keys stores QRouter customer metadata and counts token usage", async () => {
   await enableManagementAuth();
   await createManagementKey();

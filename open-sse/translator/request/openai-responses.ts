@@ -11,6 +11,21 @@ import { register } from "../registry.ts";
 
 type JsonRecord = Record<string, unknown>;
 const RESPONSES_STORE_MARKER = "_omnirouteResponsesStore";
+const RESPONSES_ALLOWED_TOOL_TYPES: ReadonlySet<string> = new Set([
+  "function",
+  "custom",
+  "command",
+  "namespace",
+  "image_generation",
+  "web_search",
+  "web_search_preview",
+  "file_search",
+  "computer",
+  "computer_use_preview",
+  "code_interpreter",
+  "mcp",
+  "local_shell",
+]);
 
 function toRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
@@ -54,22 +69,13 @@ export function openaiResponsesToOpenAIRequest(
   const credentialRecord = toRecord(credentials);
   const storeEnabled = isOpenAIResponsesStoreEnabled(credentialRecord.providerSpecificData);
 
-  // Validate tool types — only function tools can be translated to Chat Completions
+  // Validate tool types — allow function, custom, command, namespace, and all Codex hosted tool types
   const tools = toArray(root.tools);
   if (tools.length > 0) {
     for (const toolValue of tools) {
       const tool = toRecord(toolValue);
       const toolType = toString(tool.type);
-      // Allow: function tools, tools already in Chat format (have .function property), CLI subagent tools,
-      // and namespace tools (MCP tool groups used by Codex/OpenAI Responses API).
-      if (
-        toolType &&
-        toolType !== "function" &&
-        toolType !== "custom" &&
-        toolType !== "command" &&
-        toolType !== "namespace" &&
-        !tool.function
-      ) {
+      if (toolType && !RESPONSES_ALLOWED_TOOL_TYPES.has(toolType) && !tool.function) {
         throw unsupportedFeature(
           `Unsupported Responses API feature: ${toolType} tool type is not supported by omniroute`
         );
@@ -249,6 +255,10 @@ export function openaiResponsesToOpenAIRequest(
     result.tools = root.tools.map((toolValue) => {
       const tool = toRecord(toolValue);
       if (tool.function) return toolValue;
+      const toolType = toString(tool.type);
+      if (RESPONSES_ALLOWED_TOOL_TYPES.has(toolType) && toolType !== "function") {
+        return toolValue;
+      }
       return {
         type: "function",
         function: {
@@ -289,7 +299,12 @@ export function openaiResponsesToOpenAIRequest(
     const tcType = toString(tc.type);
     if (tcType === "function" && tc.name !== undefined && !tc.function) {
       result.tool_choice = { type: "function", function: { name: tc.name } };
-    } else if (tcType && tcType !== "function" && tcType !== "allowed_tools") {
+    } else if (
+      tcType &&
+      tcType !== "function" &&
+      tcType !== "allowed_tools" &&
+      !RESPONSES_ALLOWED_TOOL_TYPES.has(tcType)
+    ) {
       // Built-in tool types (web_search_preview, file_search, etc.) have no Chat equivalent
       throw unsupportedFeature(
         `Unsupported Responses API feature: tool_choice type '${tcType}' is not supported by omniroute`

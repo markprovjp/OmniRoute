@@ -627,6 +627,44 @@ export function buildKiroPayload(model, body, stream, credentials) {
   );
   const messages = body.messages || [];
   let tools = body.tools || [];
+
+  // Filter out Codex hosted/unsupported tool types that Kiro/AWS CodeWhisperer does not support
+  const KIRO_UNSUPPORTED_TOOL_TYPES = new Set([
+    "image_generation",
+    "web_search",
+    "web_search_preview",
+    "file_search",
+    "computer",
+    "computer_use_preview",
+    "code_interpreter",
+    "mcp",
+    "local_shell",
+  ]);
+  tools = tools.filter((t) => {
+    if (t && typeof t === "object") {
+      const toolType = String(t.type || "");
+      if (KIRO_UNSUPPORTED_TOOL_TYPES.has(toolType)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  // Flatten namespace tools for Kiro, which only supports flat toolSpecification objects
+  const flatTools = [];
+  for (const t of tools) {
+    if (t && typeof t === "object" && t.type === "namespace" && Array.isArray(t.tools)) {
+      for (const subTool of t.tools) {
+        if (subTool && typeof subTool === "object") {
+          flatTools.push(subTool);
+        }
+      }
+    } else {
+      flatTools.push(t);
+    }
+  }
+  tools = flatTools;
+
   const maxTokens = body.max_tokens ?? body.max_completion_tokens ?? 32000;
   const temperature = body.temperature;
   const topP = body.top_p;

@@ -76,6 +76,7 @@ export async function POST(request) {
     }
     const {
       name,
+      billingMode,
       noLog,
       scopes,
       customerName,
@@ -90,17 +91,18 @@ export async function POST(request) {
 
     // Always get machineId from server
     const machineId = await getConsistentMachineId();
+    const isSystemKey = billingMode === "system";
     const apiKey = await createApiKey(name, machineId, {
       scopes: scopes ?? [],
       customerName: customerName ?? name,
       internalNote: internalNote ?? null,
-      tokenLimit: tokenLimit ?? null,
+      tokenLimit: isSystemKey ? null : (tokenLimit ?? null),
       dailyTokenLimit: dailyTokenLimit ?? null,
       hourlyTokenLimit: hourlyTokenLimit ?? null,
       maxRequestsPerDay: maxRequestsPerDay ?? null,
       maxRequestsPerMinute: maxRequestsPerMinute ?? null,
       expiresAt: expiresAt ?? null,
-      commercialKey: true,
+      commercialKey: !isSystemKey,
     });
     if (noLog === true) {
       await updateApiKeyPermissions(apiKey.id, { noLog: true });

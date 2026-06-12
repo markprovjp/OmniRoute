@@ -110,14 +110,36 @@ test("Responses -> Chat filters orphan tool outputs and supports role-based mess
   });
 });
 
-test("Responses -> Chat rejects unsupported built-in tools", () => {
+test("Responses -> Chat preserves allowed built-in tools but throws for unsupported tool types", () => {
+  const result = openaiResponsesToOpenAIRequest(
+    "gpt-4o",
+    {
+      input: [],
+      tools: [
+        { type: "web_search_preview", name: "search" },
+        {
+          type: "function",
+          name: "read_file",
+          description: "Read",
+          parameters: { type: "object" },
+        },
+      ],
+    },
+    false,
+    null
+  ) as any;
+
+  assert.equal(result.tools.length, 2);
+  assert.equal(result.tools[0].type, "web_search_preview");
+  assert.equal(result.tools[1].function.name, "read_file");
+
   assert.throws(
     () =>
       openaiResponsesToOpenAIRequest(
         "gpt-4o",
         {
           input: [],
-          tools: [{ type: "web_search_preview", name: "search" }],
+          tools: [{ type: "completely_fake_unsupported_tool_type" }],
         },
         false,
         null
@@ -499,4 +521,55 @@ test("Chat -> Responses prefers max_completion_tokens over max_tokens when both 
   (assert as any).equal((result as any).max_output_tokens, 4096);
   assert.equal((result as any).max_tokens, undefined);
   assert.equal((result as any).max_completion_tokens, undefined);
+});
+
+test("Responses -> Chat preserves namespace, custom, and command tool types and structures", () => {
+  const result = openaiResponsesToOpenAIRequest(
+    "gpt-4o",
+    {
+      input: [{ role: "user", content: [{ type: "input_text", text: "Hello" }] }],
+      tools: [
+        {
+          type: "namespace",
+          name: "mcp__node_repl__",
+          tools: [
+            {
+              type: "function",
+              name: "js",
+              description: "Run JS",
+              parameters: { type: "object" },
+            },
+          ],
+        },
+        {
+          type: "custom",
+          name: "custom_tool",
+          some_extra_param: 123,
+        },
+        {
+          type: "command",
+          name: "run_command",
+        },
+      ],
+    },
+    false,
+    null
+  ) as any;
+
+  assert.equal(result.tools.length, 3);
+  assert.equal(result.tools[0].type, "namespace");
+  assert.equal(result.tools[0].name, "mcp__node_repl__");
+  assert.deepEqual(result.tools[0].tools, [
+    {
+      type: "function",
+      name: "js",
+      description: "Run JS",
+      parameters: { type: "object" },
+    },
+  ]);
+  assert.equal(result.tools[1].type, "custom");
+  assert.equal(result.tools[1].name, "custom_tool");
+  assert.equal(result.tools[1].some_extra_param, 123);
+  assert.equal(result.tools[2].type, "command");
+  assert.equal(result.tools[2].name, "run_command");
 });

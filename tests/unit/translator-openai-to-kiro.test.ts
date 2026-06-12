@@ -866,3 +866,61 @@ test("OpenAI -> Kiro generates stable non-random toolUseId when tool_call has no
   assert.ok(id1, "toolUseId must be set even when id is absent");
   assert.equal(id1, id2, "toolUseId must be deterministic (same input → same id)");
 });
+
+test("OpenAI -> Kiro flattens namespace tools into flat toolSpecifications", () => {
+  const result = buildKiroPayload(
+    "claude-sonnet-4.6",
+    {
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        {
+          type: "namespace",
+          name: "mcp__node_repl__",
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "js",
+                description: "Run JavaScript code",
+                parameters: {
+                  type: "object",
+                  properties: { code: { type: "string" } },
+                },
+              },
+            },
+            {
+              type: "function",
+              function: {
+                name: "install_dependency",
+                description: "Install package",
+                parameters: {
+                  type: "object",
+                  properties: { name: { type: "string" } },
+                },
+              },
+            },
+          ],
+        },
+        {
+          type: "function",
+          function: {
+            name: "read_file",
+            description: "Read",
+            parameters: { type: "object" },
+          },
+        },
+      ],
+    },
+    false,
+    null
+  );
+
+  const ctx = result.conversationState.currentMessage.userInputMessage.userInputMessageContext as {
+    tools?: Array<{ toolSpecification: { name: string; description: string } }>;
+  };
+  assert.ok(ctx?.tools, "tools must be present in currentMessage context");
+  assert.equal(ctx.tools.length, 3);
+  assert.equal(ctx.tools[0].toolSpecification.name, "js");
+  assert.equal(ctx.tools[1].toolSpecification.name, "install_dependency");
+  assert.equal(ctx.tools[2].toolSpecification.name, "read_file");
+});

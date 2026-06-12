@@ -184,7 +184,11 @@ export function filterToOpenAIFormat(body) {
 
         return tool;
       })
-      .flat();
+      .flat()
+      .filter((tool) => {
+        // Only keep standard function tools for standard OpenAI-compatible endpoints
+        return tool && typeof tool === "object" && tool.type === "function" && tool.function;
+      });
   }
 
   // Normalize tool_choice to OpenAI format

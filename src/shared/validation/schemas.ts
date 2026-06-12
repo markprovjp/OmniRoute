@@ -6,6 +6,7 @@ import {
 import { SUPPORTED_BATCH_ENDPOINTS } from "@/shared/constants/batchEndpoints";
 import { MAX_REQUEST_BODY_LIMIT_MB, MIN_REQUEST_BODY_LIMIT_MB } from "@/shared/constants/bodySize";
 import { COMBO_CONFIG_MODES } from "@/shared/constants/comboConfigMode";
+import { isPrepaidTokenPackage } from "@/shared/constants/apiKeyBilling";
 import { providerAllowsOptionalApiKey } from "@/shared/constants/providers";
 import { HIDEABLE_SIDEBAR_ITEM_IDS } from "@/shared/constants/sidebarVisibility";
 import { isForbiddenUpstreamHeaderName } from "@/shared/constants/upstreamHeaders";
@@ -433,19 +434,32 @@ export const importGeminiAuthBulkSchema = z.object({
 
 // ──── API Key Schemas ────
 
-export const createKeySchema = z.object({
-  name: z.string().min(1, "Name is required").max(200),
-  noLog: z.boolean().optional(),
-  scopes: z.array(z.string().trim().min(1).max(64)).max(16).optional(),
-  customerName: z.string().trim().max(200).nullable().optional(),
-  internalNote: z.string().trim().max(2000).nullable().optional(),
-  tokenLimit: z.number().int().min(0).nullable().optional(),
-  dailyTokenLimit: z.number().int().min(0).nullable().optional(),
-  hourlyTokenLimit: z.number().int().min(0).nullable().optional(),
-  maxRequestsPerDay: z.number().int().min(0).nullable().optional(),
-  maxRequestsPerMinute: z.number().int().min(0).nullable().optional(),
-  expiresAt: z.string().datetime().nullable().optional(),
-});
+export const createKeySchema = z
+  .object({
+    name: z.string().min(1, "Name is required").max(200),
+    billingMode: z.enum(["system", "prepaid"]).optional(),
+    noLog: z.boolean().optional(),
+    scopes: z.array(z.string().trim().min(1).max(64)).max(16).optional(),
+    customerName: z.string().trim().max(200).nullable().optional(),
+    internalNote: z.string().trim().max(2000).nullable().optional(),
+    tokenLimit: z.number().int().min(0).nullable().optional(),
+    dailyTokenLimit: z.number().int().min(0).nullable().optional(),
+    hourlyTokenLimit: z.number().int().min(0).nullable().optional(),
+    maxRequestsPerDay: z.number().int().min(0).nullable().optional(),
+    maxRequestsPerMinute: z.number().int().min(0).nullable().optional(),
+    expiresAt: z.string().datetime().nullable().optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.billingMode !== "prepaid") return;
+
+    if (!isPrepaidTokenPackage(value.tokenLimit)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["tokenLimit"],
+        message: "Select a supported prepaid package",
+      });
+    }
+  });
 
 export const createSyncTokenSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(200),
