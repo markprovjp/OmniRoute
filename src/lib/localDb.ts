@@ -100,6 +100,26 @@ export {
 } from "./db/apiKeys";
 
 export {
+  createTelegramLinkClaim,
+  consumeTelegramLinkClaim,
+  getTelegramSubscriptionByChat,
+  listActiveTelegramSubscriptions,
+  disconnectTelegramSubscription,
+  setTelegramMute,
+  reserveTelegramAlertDelivery,
+  recordTelegramAlertDelivery,
+  acquireTelegramBotLease,
+  renewTelegramBotLease,
+  releaseTelegramBotLease,
+} from "./db/telegramBot";
+
+export type {
+  TelegramAlertDeliveryUpdate,
+  TelegramLinkClaim,
+  TelegramSubscription,
+} from "./db/telegramBot";
+
+export {
   // Evals
   saveEvalRun,
   listEvalRuns,
