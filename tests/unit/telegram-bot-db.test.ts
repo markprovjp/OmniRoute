@@ -168,6 +168,8 @@ test("alert delivery records stable failure codes and attempt counts", async () 
       {
         status: "sent",
         telegramMessageId: "777",
+        errorCode: "telegram_rate_limited",
+        retryAt: new Date("2026-07-19T00:03:00.000Z"),
       },
       new Date("2026-07-19T00:02:00.000Z")
     ),
@@ -180,6 +182,50 @@ test("alert delivery records stable failure codes and attempt counts", async () 
     retryAt: null,
     status: "sent",
     telegramMessageId: "777",
+  });
+
+  assert.equal(
+    telegramDb.recordTelegramAlertDelivery(
+      subscription.id,
+      "daily_tokens:90",
+      {
+        status: "retry",
+        errorCode: "network_error",
+        retryAt: new Date("2026-07-19T00:04:00.000Z"),
+      },
+      new Date("2026-07-19T00:03:00.000Z")
+    ),
+    true
+  );
+  assert.deepEqual(telegramDb.__testGetTelegramAlertDelivery(subscription.id, "daily_tokens:90"), {
+    attemptCount: 3,
+    deliveredAt: null,
+    lastErrorCode: "network_error",
+    retryAt: "2026-07-19T00:04:00.000Z",
+    status: "retry",
+    telegramMessageId: null,
+  });
+
+  assert.equal(
+    telegramDb.recordTelegramAlertDelivery(
+      subscription.id,
+      "daily_tokens:90",
+      {
+        status: "failed",
+        errorCode: "telegram_upstream_error",
+        retryAt: new Date("2026-07-19T00:05:00.000Z"),
+      },
+      new Date("2026-07-19T00:04:00.000Z")
+    ),
+    true
+  );
+  assert.deepEqual(telegramDb.__testGetTelegramAlertDelivery(subscription.id, "daily_tokens:90"), {
+    attemptCount: 4,
+    deliveredAt: null,
+    lastErrorCode: "telegram_upstream_error",
+    retryAt: null,
+    status: "failed",
+    telegramMessageId: null,
   });
 });
 

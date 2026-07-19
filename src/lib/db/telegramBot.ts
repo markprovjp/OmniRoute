@@ -275,6 +275,8 @@ export function recordTelegramAlertDelivery(
   }
 
   const nowMs = toMillis(now);
+  const lastErrorCode = update.status === "sent" ? null : (update.errorCode ?? null);
+  const retryAt = update.status === "retry" && update.retryAt ? toMillis(update.retryAt) : null;
   const result = getDbInstance()
     .prepare(
       `UPDATE telegram_alert_deliveries
@@ -285,8 +287,8 @@ export function recordTelegramAlertDelivery(
     .run(
       update.status,
       update.telegramMessageId ?? null,
-      update.errorCode ?? null,
-      update.retryAt ? toMillis(update.retryAt) : null,
+      lastErrorCode,
+      retryAt,
       update.status === "sent" ? nowMs : null,
       nowMs,
       subscriptionId,
