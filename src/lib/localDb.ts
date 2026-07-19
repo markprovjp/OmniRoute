@@ -108,6 +108,7 @@ export {
   setTelegramMute,
   reserveTelegramAlertDelivery,
   recordTelegramAlertDelivery,
+  cleanupTelegramBotState,
   acquireTelegramBotLease,
   renewTelegramBotLease,
   releaseTelegramBotLease,
@@ -118,6 +119,8 @@ export {
 export type {
   TelegramAlertDeliveryErrorCode,
   TelegramAlertDeliveryUpdate,
+  TelegramBotCleanupOptions,
+  TelegramBotCleanupResult,
   TelegramLinkClaim,
   TelegramSubscription,
 } from "./db/telegramBot";

@@ -204,3 +204,80 @@ test("the singleton bot state preserves an advancing cursor across lease operati
   assert.equal(telegramDb.releaseTelegramBotLease("worker-b"), true);
   assert.equal(telegramDb.getTelegramLastProcessedUpdateId(), 42);
 });
+
+test("cleanup removes expired claims and old successful deliveries only", async () => {
+  const key = await createKey();
+  const now = new Date("2026-07-19T00:00:00.000Z");
+  telegramDb.createTelegramLinkClaim(key.id, new Date("2026-07-18T23:48:00.000Z"));
+  telegramDb.createTelegramLinkClaim(key.id, now);
+  const subscriptionClaim = telegramDb.createTelegramLinkClaim(key.id, now);
+  const subscription = telegramDb.consumeTelegramLinkClaim(subscriptionClaim.token, "12345", now);
+  assert.ok(subscription);
+
+  const oldDeliveryTime = new Date("2026-06-17T23:59:59.999Z");
+  const recentDeliveryTime = new Date("2026-06-19T00:00:00.000Z");
+  assert.equal(
+    telegramDb.reserveTelegramAlertDelivery(subscription.id, "old-success", oldDeliveryTime),
+    true
+  );
+  assert.equal(
+    telegramDb.recordTelegramAlertDelivery(
+      subscription.id,
+      "old-success",
+      { status: "sent", telegramMessageId: "old" },
+      oldDeliveryTime
+    ),
+    true
+  );
+  assert.equal(
+    telegramDb.reserveTelegramAlertDelivery(subscription.id, "recent-success", recentDeliveryTime),
+    true
+  );
+  assert.equal(
+    telegramDb.recordTelegramAlertDelivery(
+      subscription.id,
+      "recent-success",
+      { status: "sent", telegramMessageId: "recent" },
+      recentDeliveryTime
+    ),
+    true
+  );
+  assert.equal(
+    telegramDb.reserveTelegramAlertDelivery(subscription.id, "pending", oldDeliveryTime),
+    true
+  );
+
+  assert.deepEqual(telegramDb.cleanupTelegramBotState({ now, retentionDays: 30 }), {
+    expiredClaimsDeleted: 1,
+    successfulDeliveriesDeleted: 1,
+  });
+  const remainingClaims = telegramDb.__testListClaims();
+  assert.equal(remainingClaims.length, 2);
+  assert.equal(
+    remainingClaims.every((claim) => Number(claim.expiresAt) > now.getTime()),
+    true
+  );
+  assert.equal(telegramDb.__testGetTelegramAlertDelivery(subscription.id, "old-success"), null);
+  assert.equal(
+    telegramDb.__testGetTelegramAlertDelivery(subscription.id, "recent-success")?.status,
+    "sent"
+  );
+  assert.equal(
+    telegramDb.__testGetTelegramAlertDelivery(subscription.id, "pending")?.status,
+    "reserved"
+  );
+});
+
+test("cleanup respects the requested batch limit", async () => {
+  const key = await createKey();
+  const now = new Date("2026-07-19T00:00:00.000Z");
+  for (let index = 0; index < 3; index += 1) {
+    telegramDb.createTelegramLinkClaim(key.id, new Date(`2026-07-18T23:4${index}:00.000Z`));
+  }
+
+  assert.deepEqual(telegramDb.cleanupTelegramBotState({ now, retentionDays: 30, limit: 2 }), {
+    expiredClaimsDeleted: 2,
+    successfulDeliveriesDeleted: 0,
+  });
+  assert.equal(telegramDb.__testListClaims().length, 1);
+});

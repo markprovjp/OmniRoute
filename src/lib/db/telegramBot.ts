@@ -2,6 +2,9 @@ import { createHash, randomBytes, randomUUID } from "crypto";
 import { getDbInstance, rowToCamel } from "./core";
 
 const CLAIM_TTL_MS = 10 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SUCCESSFUL_DELIVERY_RETENTION_DAYS = 30;
+const MAX_CLEANUP_BATCH_LIMIT = 1000;
 
 interface TelegramSubscriptionRow {
   id: string;
@@ -41,6 +44,17 @@ export interface TelegramAlertDeliveryUpdate {
   telegramMessageId?: string | null;
   errorCode?: TelegramAlertDeliveryErrorCode | null;
   retryAt?: Date | null;
+}
+
+export interface TelegramBotCleanupOptions {
+  now?: Date;
+  retentionDays?: number;
+  limit?: number;
+}
+
+export interface TelegramBotCleanupResult {
+  expiredClaimsDeleted: number;
+  successfulDeliveriesDeleted: number;
 }
 
 export type TelegramAlertDeliveryErrorCode =
@@ -83,6 +97,16 @@ function mapSubscription(row: TelegramSubscriptionRow): TelegramSubscription {
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
+}
+
+function normalizeCleanupLimit(limit: number): number {
+  if (!Number.isFinite(limit)) return MAX_CLEANUP_BATCH_LIMIT;
+  return Math.max(0, Math.min(Math.floor(limit), MAX_CLEANUP_BATCH_LIMIT));
+}
+
+function normalizeRetentionDays(retentionDays: number): number {
+  if (!Number.isFinite(retentionDays)) return DEFAULT_SUCCESSFUL_DELIVERY_RETENTION_DAYS;
+  return Math.max(0, retentionDays);
 }
 
 export function createTelegramLinkClaim(apiKeyId: string, now = new Date()): TelegramLinkClaim {
@@ -269,6 +293,52 @@ export function recordTelegramAlertDelivery(
       dedupeKey
     );
   return result.changes === 1;
+}
+
+export function cleanupTelegramBotState(
+  options: TelegramBotCleanupOptions = {}
+): TelegramBotCleanupResult {
+  const now = options.now ?? new Date();
+  const nowMs = toMillis(now);
+  const retentionDays = normalizeRetentionDays(
+    options.retentionDays ?? DEFAULT_SUCCESSFUL_DELIVERY_RETENTION_DAYS
+  );
+  const retentionCutoffMs = nowMs - retentionDays * DAY_MS;
+  const limit = normalizeCleanupLimit(options.limit ?? MAX_CLEANUP_BATCH_LIMIT);
+  const result: TelegramBotCleanupResult = {
+    expiredClaimsDeleted: 0,
+    successfulDeliveriesDeleted: 0,
+  };
+  const db = getDbInstance();
+
+  db.immediate(() => {
+    result.expiredClaimsDeleted = db
+      .prepare(
+        `DELETE FROM telegram_link_claims
+         WHERE rowid IN (
+           SELECT rowid
+           FROM telegram_link_claims
+           WHERE expires_at <= ?
+           ORDER BY expires_at ASC, rowid ASC
+           LIMIT ?
+         )`
+      )
+      .run(nowMs, limit).changes;
+    result.successfulDeliveriesDeleted = db
+      .prepare(
+        `DELETE FROM telegram_alert_deliveries
+         WHERE rowid IN (
+           SELECT rowid
+           FROM telegram_alert_deliveries
+           WHERE status = ? AND delivered_at IS NOT NULL AND delivered_at < ?
+           ORDER BY delivered_at ASC, rowid ASC
+           LIMIT ?
+         )`
+      )
+      .run("sent", retentionCutoffMs, limit).changes;
+  });
+
+  return result;
 }
 
 export function acquireTelegramBotLease(
