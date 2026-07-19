@@ -96,7 +96,7 @@ Commit: `refactor(usage): share customer key usage snapshot`
 ### Task 2: Durable Telegram Claims And Subscriptions
 
 **Files:**
-- Create: `src/lib/db/migrations/056_telegram_token_bot.sql`
+- Create: `src/lib/db/migrations/067_telegram_token_bot.sql`
 - Create: `src/lib/db/telegramBot.ts`
 - Modify: `src/lib/localDb.ts`
 - Test: `tests/unit/telegram-bot-db.test.ts`
