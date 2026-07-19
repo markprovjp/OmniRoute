@@ -47,6 +47,20 @@ export interface CreateApiKeyOptions {
   commercialKey?: boolean;
 }
 
+export interface ApiKeyCustomerUsageMetadata {
+  id: string;
+  name: string;
+  keyPrefix: string | null;
+  isActive: boolean;
+  isBanned: boolean;
+  expiresAt: string | null;
+  maxRequestsPerDay: number | null;
+  tokenLimit: number | null;
+  dailyTokenLimit: number | null;
+  hourlyTokenLimit: number | null;
+  tokenUsed: number;
+}
+
 interface ApiKeyMetadata {
   id: string;
   name: string;
@@ -114,6 +128,7 @@ interface ApiKeysDbLike {
 interface ApiKeysStatements {
   getAllKeys: StatementLike<ApiKeyRow>;
   getKeyById: StatementLike<ApiKeyRow>;
+  getKeyCustomerUsageMetadataById: StatementLike<ApiKeyRow>;
   validateKey: StatementLike<JsonRecord>;
   getKeyMetadata: StatementLike<ApiKeyRow>;
   insertKey: StatementLike;
@@ -176,6 +191,9 @@ const _modelPermissionCache = new Map<string, { allowed: boolean; timestamp: num
 // Prepared statements cache
 let _stmtGetAllKeys: ApiKeysStatements["getAllKeys"] | null = null;
 let _stmtGetKeyById: ApiKeysStatements["getKeyById"] | null = null;
+let _stmtGetKeyCustomerUsageMetadataById:
+  | ApiKeysStatements["getKeyCustomerUsageMetadataById"]
+  | null = null;
 let _stmtValidateKey: ApiKeysStatements["validateKey"] | null = null;
 let _stmtGetKeyMetadata: ApiKeysStatements["getKeyMetadata"] | null = null;
 let _stmtInsertKey: ApiKeysStatements["insertKey"] | null = null;
@@ -352,6 +370,7 @@ function getPreparedStatements(db: ApiKeysDbLike): ApiKeysStatements {
   if (
     !_stmtGetAllKeys ||
     !_stmtGetKeyById ||
+    !_stmtGetKeyCustomerUsageMetadataById ||
     !_stmtValidateKey ||
     !_stmtGetKeyMetadata ||
     !_stmtInsertKey ||
@@ -359,6 +378,9 @@ function getPreparedStatements(db: ApiKeysDbLike): ApiKeysStatements {
   ) {
     _stmtGetAllKeys = db.prepare<ApiKeyRow>("SELECT * FROM api_keys ORDER BY created_at");
     _stmtGetKeyById = db.prepare<ApiKeyRow>("SELECT * FROM api_keys WHERE id = ?");
+    _stmtGetKeyCustomerUsageMetadataById = db.prepare<ApiKeyRow>(
+      "SELECT id, name, key_prefix, is_active, is_banned, expires_at, max_requests_per_day, token_limit, daily_token_limit, hourly_token_limit, token_used FROM api_keys WHERE id = ?"
+    );
     _stmtValidateKey = db.prepare<JsonRecord>(
       "SELECT id, expires_at, revoked_at, is_active, is_banned FROM api_keys WHERE key = ? OR key_hash = ?"
     );
@@ -374,6 +396,7 @@ function getPreparedStatements(db: ApiKeysDbLike): ApiKeysStatements {
   if (
     !_stmtGetAllKeys ||
     !_stmtGetKeyById ||
+    !_stmtGetKeyCustomerUsageMetadataById ||
     !_stmtValidateKey ||
     !_stmtGetKeyMetadata ||
     !_stmtInsertKey ||
@@ -385,6 +408,7 @@ function getPreparedStatements(db: ApiKeysDbLike): ApiKeysStatements {
   return {
     getAllKeys: _stmtGetAllKeys,
     getKeyById: _stmtGetKeyById,
+    getKeyCustomerUsageMetadataById: _stmtGetKeyCustomerUsageMetadataById,
     validateKey: _stmtValidateKey,
     getKeyMetadata: _stmtGetKeyMetadata,
     insertKey: _stmtInsertKey,
@@ -445,6 +469,38 @@ export async function getApiKeyById(id: string) {
     setNoLog(camelRow.id, camelRow.noLog === true);
   }
   return camelRow;
+}
+
+export async function getApiKeyCustomerUsageMetadataById(
+  id: string
+): Promise<ApiKeyCustomerUsageMetadata | null> {
+  const db = getDbInstance() as ApiKeysDbLike;
+  const stmt = getPreparedStatements(db);
+  const row = stmt.getKeyCustomerUsageMetadataById.get(id);
+  if (!row) return null;
+
+  const record = toRecord(row) as ApiKeyRow;
+  const metadata: ApiKeyCustomerUsageMetadata = {
+    id: typeof record.id === "string" ? record.id : "",
+    name: typeof record.name === "string" ? record.name : "",
+    keyPrefix: parseNullableString(record.key_prefix ?? record.keyPrefix),
+    isActive: parseIsActive(record.is_active ?? record.isActive),
+    isBanned: parseIsBanned(record.is_banned ?? record.isBanned),
+    expiresAt: parseNullableTimestamp(record.expires_at ?? record.expiresAt),
+    maxRequestsPerDay: parseNullableNonNegativeInt(
+      record.max_requests_per_day ?? record.maxRequestsPerDay
+    ),
+    tokenLimit: parseNullableNonNegativeInt(record.token_limit ?? record.tokenLimit),
+    dailyTokenLimit: parseNullableNonNegativeInt(
+      record.daily_token_limit ?? record.dailyTokenLimit
+    ),
+    hourlyTokenLimit: parseNullableNonNegativeInt(
+      record.hourly_token_limit ?? record.hourlyTokenLimit
+    ),
+    tokenUsed: parseNonNegativeInt(record.token_used ?? record.tokenUsed),
+  };
+
+  return metadata.id ? metadata : null;
 }
 
 /**
@@ -1353,6 +1409,7 @@ export async function isModelAllowedForKey(
 function clearPreparedStatementCache() {
   _stmtGetAllKeys = null;
   _stmtGetKeyById = null;
+  _stmtGetKeyCustomerUsageMetadataById = null;
   _stmtValidateKey = null;
   _stmtGetKeyMetadata = null;
   _stmtInsertKey = null;

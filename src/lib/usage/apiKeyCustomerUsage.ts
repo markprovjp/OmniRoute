@@ -1,5 +1,5 @@
 import { maskStoredApiKey } from "@/lib/apiKeyExposure";
-import { getApiKeyById } from "@/lib/db/apiKeys";
+import { getApiKeyCustomerUsageMetadataById } from "@/lib/db/apiKeys";
 import { buildApiKeyUsageAlerts, type ApiKeyUsageAlert } from "@/lib/usage/apiKeyAlerts";
 import {
   getApiKeyModelUsage,
@@ -271,6 +271,6 @@ export async function getApiKeyCustomerUsageById(
   apiKeyId: string,
   options: ApiKeyCustomerUsageOptions = {}
 ): Promise<ApiKeyCustomerUsage | null> {
-  const apiKey = await getApiKeyById(apiKeyId);
+  const apiKey = await getApiKeyCustomerUsageMetadataById(apiKeyId);
   return apiKey ? buildApiKeyCustomerUsage(apiKey, options) : null;
 }

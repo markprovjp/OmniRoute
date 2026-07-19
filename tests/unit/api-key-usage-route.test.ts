@@ -121,6 +121,42 @@ test("POST /api/v1/usage accepts a key body for dashboard-style public usage che
   assert.equal(body.tokenQuota.remaining, 425);
 });
 
+test("POST /api/customer/usage delegates to the v1 customer usage snapshot", async () => {
+  const apiKey = await apiKeysDb.createApiKey("Delegated customer route key", MACHINE_ID, {
+    dailyTokenLimit: 200,
+    commercialKey: true,
+  });
+  await usageHistory.saveRequestUsage({
+    apiKeyId: apiKey.id,
+    apiKeyName: apiKey.name,
+    provider: "codex",
+    model: "gpt-5.5",
+    status: "200",
+    success: true,
+    tokens: { input: 60, output: 40 },
+  });
+
+  const request = () =>
+    new Request("http://localhost/api/usage", {
+      method: "POST",
+      body: JSON.stringify({ apiKey: apiKey.key }),
+      headers: { "content-type": "application/json" },
+    });
+  const [v1Response, customerResponse] = await Promise.all([
+    usageRoute.POST(request()),
+    customerUsageRoute.POST(request()),
+  ]);
+  const v1Body = (await v1Response.json()) as any;
+  const customerBody = (await customerResponse.json()) as any;
+
+  assert.equal(v1Response.status, 200);
+  assert.equal(customerResponse.status, 200);
+  assert.equal(customerBody.object, v1Body.object);
+  assert.deepEqual(customerBody.key, v1Body.key);
+  assert.deepEqual(customerBody.tokenQuota, v1Body.tokenQuota);
+  assert.equal(JSON.stringify(customerBody).includes(apiKey.key), false);
+});
+
 test("POST /api/customer/usage reuses the public customer usage check", async () => {
   const apiKey = await apiKeysDb.createApiKey("Customer portal key", MACHINE_ID, {
     dailyTokenLimit: 250,

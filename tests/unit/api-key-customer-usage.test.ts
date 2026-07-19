@@ -77,6 +77,20 @@ test("buildApiKeyCustomerUsage returns null limits for a key with no limits", as
   assert.equal(JSON.stringify(snapshot).includes(apiKey.key), false);
 });
 
+test("getApiKeyCustomerUsageMetadataById excludes secret-bearing fields", async () => {
+  const apiKey = await apiKeysDb.createApiKey("Metadata customer", MACHINE_ID, {
+    commercialKey: true,
+  });
+
+  const metadata = await apiKeysDb.getApiKeyCustomerUsageMetadataById(apiKey.id);
+
+  assert.notEqual(metadata, null);
+  assert.equal(metadata.keyPrefix, apiKey.key.slice(0, 24));
+  assert.equal("key" in metadata, false);
+  assert.equal("keyHash" in metadata, false);
+  assert.equal(JSON.stringify(metadata).includes(apiKey.key), false);
+});
+
 test("getApiKeyCustomerUsageById returns null for a deleted key", async () => {
   const apiKey = await apiKeysDb.createApiKey("Deleted customer", MACHINE_ID, {
     commercialKey: true,
