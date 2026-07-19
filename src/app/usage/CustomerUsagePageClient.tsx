@@ -51,6 +51,17 @@ type CustomerUsageResponse = {
   };
   requestQuota: UsageMetric;
   tokenQuota: UsageMetric & { reserved?: number; effectiveUsed?: number };
+  alerts?: Array<{
+    id: string;
+    metric: "daily_tokens" | "lifetime_tokens" | "key_expiry";
+    level: "warning" | "critical" | "exhausted";
+    thresholdPercent: number | null;
+    usedPercent: number | null;
+    title: string;
+    message: string;
+    resetAt: string | null;
+    expiresAt?: string | null;
+  }>;
   quotaUsage?: {
     totalTokenUsed: number;
     lifetimeTokenUsed: number;
@@ -163,6 +174,38 @@ function QuotaBar({ label, metric }: { label: string; metric: UsageMetric }) {
       <div className="mt-2 text-xs text-text-muted">
         Limit {formatNumber(metric.limit)}
         {percent === null ? "" : ` · ${Math.round(percent)}% used`}
+      </div>
+    </div>
+  );
+}
+
+function AlertCard({
+  title,
+  message,
+  tone,
+  meta,
+}: {
+  title: string;
+  message: string;
+  tone: "warning" | "critical" | "exhausted";
+  meta: string;
+}) {
+  const className =
+    tone === "exhausted"
+      ? "border-red-500/20 bg-red-500/10 text-red-700 dark:text-red-300"
+      : tone === "critical"
+        ? "border-orange-500/20 bg-orange-500/10 text-orange-700 dark:text-orange-300"
+        : "border-yellow-500/20 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300";
+
+  return (
+    <div className={`rounded-lg border px-4 py-3 ${className}`}>
+      <div className="flex items-start gap-3">
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+        <div>
+          <div className="font-medium">{title}</div>
+          <div className="mt-1 text-sm">{message}</div>
+          <div className="mt-2 text-xs opacity-80">{meta}</div>
+        </div>
       </div>
     </div>
   );
@@ -293,6 +336,24 @@ export default function CustomerUsagePageClient() {
 
         {usage ? (
           <>
+            {usage.alerts && usage.alerts.length > 0 ? (
+              <section className="grid gap-3">
+                {usage.alerts.map((alert) => (
+                  <AlertCard
+                    key={alert.id}
+                    title={alert.title}
+                    message={alert.message}
+                    tone={alert.level}
+                    meta={
+                      alert.metric === "key_expiry"
+                        ? `Expires ${formatDate(alert.expiresAt ?? null)}`
+                        : `Reset ${formatDate(alert.resetAt)}`
+                    }
+                  />
+                ))}
+              </section>
+            ) : null}
+
             <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <MetricTile
                 label="Key"

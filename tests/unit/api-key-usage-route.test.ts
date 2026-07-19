@@ -186,6 +186,39 @@ test("POST /api/customer/usage reuses the public customer usage check", async ()
   assert.equal(body.key.prefix.includes("****"), true);
   assert.equal(body.tokenQuota.used, 50);
   assert.equal(body.tokenQuota.remaining, 200);
+  assert.equal(body.alerts.length, 0);
+});
+
+test("POST /api/customer/usage returns threshold alerts when token usage nears exhaustion", async () => {
+  const apiKey = await apiKeysDb.createApiKey("Customer warning key", MACHINE_ID, {
+    dailyTokenLimit: 200,
+    expiresAt: "2026-07-21T00:00:00.000Z",
+    commercialKey: true,
+  });
+  await usageHistory.saveRequestUsage({
+    apiKeyId: apiKey.id,
+    apiKeyName: apiKey.name,
+    provider: "codex",
+    model: "gpt-5.5",
+    status: "200",
+    success: true,
+    tokens: { input: 170, output: 20 },
+  });
+
+  const response = await customerUsageRoute.POST(
+    new Request("http://localhost/api/customer/usage", {
+      method: "POST",
+      body: JSON.stringify({ apiKey: apiKey.key }),
+      headers: { "content-type": "application/json" },
+    })
+  );
+  const body = (await response.json()) as any;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.alerts.length, 2);
+  assert.equal(body.alerts[0].metric, "daily_tokens");
+  assert.equal(body.alerts[0].thresholdPercent, 95);
+  assert.equal(body.alerts[1].metric, "key_expiry");
 });
 
 test("POST /api/customer/logs returns only sanitized logs for the submitted key", async () => {
@@ -354,6 +387,7 @@ test("GET /api/v1/usage includes request reservations in daily quota usage", asy
   assert.equal(body.requests.today, 1);
   assert.equal(body.requests.total, 0);
   assert.equal(body.requestQuota.used, 1);
+  assert.equal(body.alerts.length, 0);
   assert.equal(body.requestQuota.remaining, 1);
   assert.equal(body.tokenQuota.reserved, 100);
 });

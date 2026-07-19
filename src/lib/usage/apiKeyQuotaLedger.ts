@@ -1,5 +1,7 @@
 import { randomUUID } from "crypto";
 import { getDbInstance } from "@/lib/db/core";
+import { maskStoredApiKey } from "@/lib/apiKeyExposure";
+import { dispatchApiKeyThresholdAlerts } from "@/lib/usage/apiKeyAlerts";
 import { getRedisClient, isRedisEnabled } from "@/shared/utils/rateLimiter";
 
 const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
@@ -10,6 +12,7 @@ const QUOTA_CONFIG_CACHE_TTL_MS = 1_000;
 
 interface RedisQuotaClient {
   eval(script: string, numKeys: number, ...args: Array<string | number>): Promise<unknown>;
+  status?: string;
 }
 
 let redisQuotaClientForTest: RedisQuotaClient | null | undefined;
@@ -819,6 +822,15 @@ export function settleApiKeyUsageReservation(input: {
   const outputTokens = Math.max(0, Math.floor(Number(input.outputTokens ?? 0) || 0));
   const usageSource = input.usageSource || (input.actualTokens == null ? "estimated" : "actual");
   const db = getDbInstance();
+  let keyAlertContext:
+    | {
+        name: string | null;
+        key: string | null;
+        expiresAt: string | null;
+        tokenLimit: number | null;
+        tokenUsed: number;
+      }
+    | undefined;
   db.transaction(() => {
     const now = new Date().toISOString();
     const current = db
@@ -854,6 +866,22 @@ export function settleApiKeyUsageReservation(input: {
       WHERE id = @apiKeyId
     `
     ).run({ apiKeyId, actualTokens });
+    const keyRow = db
+      .prepare(
+        `
+        SELECT name, key, expires_at, token_limit, token_used
+        FROM api_keys
+        WHERE id = ?
+      `
+      )
+      .get(apiKeyId) as QuotaRow | undefined;
+    keyAlertContext = {
+      name: toStringOrNull(keyRow?.name),
+      key: toStringOrNull(keyRow?.key),
+      expiresAt: toStringOrNull(keyRow?.expires_at),
+      tokenLimit: positiveInt(keyRow?.token_limit),
+      tokenUsed: nonNegativeInt(keyRow?.token_used),
+    };
     db.prepare(
       `
       UPDATE api_key_usage_reservations
@@ -898,7 +926,22 @@ export function settleApiKeyUsageReservation(input: {
     mode: "settle",
     actualTokens,
   });
-  return getApiKeyQuotaSnapshot(apiKeyId);
+  const snapshot = getApiKeyQuotaSnapshot(apiKeyId);
+  if (keyAlertContext) {
+    void dispatchApiKeyThresholdAlerts({
+      apiKeyId,
+      apiKeyName: keyAlertContext.name,
+      maskedKey: keyAlertContext.key ? maskStoredApiKey(keyAlertContext.key) : null,
+      dailyTokenLimit: snapshot.day?.tokenLimit ?? null,
+      dailyTokenUsed: snapshot.day?.usedTokens ?? null,
+      dailyReservedTokens: snapshot.day?.reservedTokens ?? 0,
+      dailyResetAt: snapshot.day?.resetAt ?? null,
+      lifetimeTokenLimit: keyAlertContext.tokenLimit,
+      lifetimeTokenUsed: keyAlertContext.tokenUsed,
+      expiresAt: keyAlertContext.expiresAt,
+    });
+  }
+  return snapshot;
 }
 
 export function releaseApiKeyUsageReservation(
