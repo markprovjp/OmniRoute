@@ -42,10 +42,8 @@ test("link claims persist only a hash, expire after ten minutes, and reject repl
   assert.equal(claim.expiresAt, "2026-07-19T00:10:00.000Z");
   assert.equal(JSON.stringify(telegramDb.__testListClaims()).includes(claim.token), false);
 
-  const [first, replay] = await Promise.all([
-    Promise.resolve().then(() => telegramDb.consumeTelegramLinkClaim(claim.token, "12345", now)),
-    Promise.resolve().then(() => telegramDb.consumeTelegramLinkClaim(claim.token, "99999", now)),
-  ]);
+  const first = telegramDb.consumeTelegramLinkClaim(claim.token, "12345", now);
+  const replay = telegramDb.consumeTelegramLinkClaim(claim.token, "99999", now);
 
   assert.equal(first?.apiKeyId, key.id);
   assert.equal(first?.chatId, "12345");
@@ -113,7 +111,7 @@ test("subscriptions can be muted and disconnected", async () => {
   assert.deepEqual(telegramDb.listActiveTelegramSubscriptions(), []);
 });
 
-test("alert delivery reservations deduplicate per subscription", async () => {
+test("alert delivery records stable failure codes and attempt counts", async () => {
   const key = await createKey();
   const now = new Date("2026-07-19T00:00:00.000Z");
   const claim = telegramDb.createTelegramLinkClaim(key.id, now);
@@ -128,6 +126,41 @@ test("alert delivery reservations deduplicate per subscription", async () => {
     telegramDb.reserveTelegramAlertDelivery(subscription.id, "daily_tokens:90", now),
     false
   );
+  assert.throws(
+    () =>
+      telegramDb.recordTelegramAlertDelivery(
+        subscription.id,
+        "daily_tokens:90",
+        {
+          status: "failed",
+          errorCode: "Telegram API said too many requests" as never,
+        },
+        now
+      ),
+    /Unsupported Telegram alert error code/
+  );
+  assert.equal(
+    telegramDb.recordTelegramAlertDelivery(
+      subscription.id,
+      "daily_tokens:90",
+      {
+        status: "retry",
+        errorCode: "telegram_rate_limited",
+        retryAt: new Date("2026-07-19T00:01:00.000Z"),
+      },
+      now
+    ),
+    true
+  );
+  assert.deepEqual(telegramDb.__testGetTelegramAlertDelivery(subscription.id, "daily_tokens:90"), {
+    attemptCount: 1,
+    deliveredAt: null,
+    lastErrorCode: "telegram_rate_limited",
+    retryAt: "2026-07-19T00:01:00.000Z",
+    status: "retry",
+    telegramMessageId: null,
+  });
+
   assert.equal(
     telegramDb.recordTelegramAlertDelivery(
       subscription.id,
@@ -136,14 +169,28 @@ test("alert delivery reservations deduplicate per subscription", async () => {
         status: "sent",
         telegramMessageId: "777",
       },
-      now
+      new Date("2026-07-19T00:02:00.000Z")
     ),
     true
   );
+  assert.deepEqual(telegramDb.__testGetTelegramAlertDelivery(subscription.id, "daily_tokens:90"), {
+    attemptCount: 2,
+    deliveredAt: "2026-07-19T00:02:00.000Z",
+    lastErrorCode: null,
+    retryAt: null,
+    status: "sent",
+    telegramMessageId: "777",
+  });
 });
 
-test("the singleton bot lease is owner-bound and can be taken over after expiry", () => {
+test("the singleton bot state preserves an advancing cursor across lease operations", () => {
   const now = new Date("2026-07-19T00:00:00.000Z");
+
+  assert.equal(telegramDb.getTelegramLastProcessedUpdateId(), null);
+  assert.equal(telegramDb.setTelegramLastProcessedUpdateId(42, now), true);
+  assert.equal(telegramDb.getTelegramLastProcessedUpdateId(), 42);
+  assert.equal(telegramDb.setTelegramLastProcessedUpdateId(41, now), false);
+  assert.equal(telegramDb.getTelegramLastProcessedUpdateId(), 42);
 
   assert.equal(telegramDb.acquireTelegramBotLease("worker-a", now, 60_000), true);
   assert.equal(telegramDb.acquireTelegramBotLease("worker-b", now, 60_000), false);
@@ -155,4 +202,5 @@ test("the singleton bot lease is owner-bound and can be taken over after expiry"
   );
   assert.equal(telegramDb.releaseTelegramBotLease("worker-a"), false);
   assert.equal(telegramDb.releaseTelegramBotLease("worker-b"), true);
+  assert.equal(telegramDb.getTelegramLastProcessedUpdateId(), 42);
 });

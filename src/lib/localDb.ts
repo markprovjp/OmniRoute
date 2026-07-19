@@ -111,9 +111,12 @@ export {
   acquireTelegramBotLease,
   renewTelegramBotLease,
   releaseTelegramBotLease,
+  getTelegramLastProcessedUpdateId,
+  setTelegramLastProcessedUpdateId,
 } from "./db/telegramBot";
 
 export type {
+  TelegramAlertDeliveryErrorCode,
   TelegramAlertDeliveryUpdate,
   TelegramLinkClaim,
   TelegramSubscription,

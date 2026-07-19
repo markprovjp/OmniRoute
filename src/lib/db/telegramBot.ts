@@ -39,9 +39,28 @@ export interface TelegramSubscription {
 export interface TelegramAlertDeliveryUpdate {
   status: "sent" | "retry" | "failed";
   telegramMessageId?: string | null;
-  errorMessage?: string | null;
+  errorCode?: TelegramAlertDeliveryErrorCode | null;
   retryAt?: Date | null;
 }
+
+export type TelegramAlertDeliveryErrorCode =
+  | "network_error"
+  | "request_timeout"
+  | "telegram_bad_request"
+  | "telegram_chat_not_found"
+  | "telegram_forbidden"
+  | "telegram_rate_limited"
+  | "telegram_upstream_error";
+
+const TELEGRAM_ALERT_ERROR_CODES = new Set<TelegramAlertDeliveryErrorCode>([
+  "network_error",
+  "request_timeout",
+  "telegram_bad_request",
+  "telegram_chat_not_found",
+  "telegram_forbidden",
+  "telegram_rate_limited",
+  "telegram_upstream_error",
+]);
 
 function hashClaim(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -227,18 +246,22 @@ export function recordTelegramAlertDelivery(
   update: TelegramAlertDeliveryUpdate,
   now = new Date()
 ): boolean {
+  if (update.errorCode && !TELEGRAM_ALERT_ERROR_CODES.has(update.errorCode)) {
+    throw new Error("Unsupported Telegram alert error code");
+  }
+
   const nowMs = toMillis(now);
   const result = getDbInstance()
     .prepare(
       `UPDATE telegram_alert_deliveries
-       SET status = ?, telegram_message_id = ?, error_message = ?, retry_at = ?,
-           delivered_at = ?, updated_at = ?
+       SET status = ?, attempt_count = attempt_count + 1, telegram_message_id = ?,
+           last_error_code = ?, retry_at = ?, delivered_at = ?, updated_at = ?
        WHERE subscription_id = ? AND dedupe_key = ?`
     )
     .run(
       update.status,
       update.telegramMessageId ?? null,
-      update.errorMessage ?? null,
+      update.errorCode ?? null,
       update.retryAt ? toMillis(update.retryAt) : null,
       update.status === "sent" ? nowMs : null,
       nowMs,
@@ -263,6 +286,7 @@ export function acquireTelegramBotLease(
          lease_expires_at = excluded.lease_expires_at,
          updated_at = excluded.updated_at
        WHERE telegram_bot_state.lease_expires_at <= ?
+          OR telegram_bot_state.lease_expires_at IS NULL
           OR telegram_bot_state.owner_id = excluded.owner_id`
     )
     .run(ownerId, nowMs + leaseMs, nowMs, nowMs);
@@ -287,8 +311,35 @@ export function renewTelegramBotLease(
 
 export function releaseTelegramBotLease(ownerId: string): boolean {
   const result = getDbInstance()
-    .prepare("DELETE FROM telegram_bot_state WHERE singleton_id = 1 AND owner_id = ?")
-    .run(ownerId);
+    .prepare(
+      `UPDATE telegram_bot_state
+       SET owner_id = NULL, lease_expires_at = NULL, updated_at = ?
+       WHERE singleton_id = 1 AND owner_id = ?`
+    )
+    .run(Date.now(), ownerId);
+  return result.changes === 1;
+}
+
+export function getTelegramLastProcessedUpdateId(): number | null {
+  const row = getDbInstance()
+    .prepare("SELECT last_processed_update_id FROM telegram_bot_state WHERE singleton_id = 1")
+    .get() as { last_processed_update_id: number | null } | undefined;
+  return row?.last_processed_update_id ?? null;
+}
+
+export function setTelegramLastProcessedUpdateId(updateId: number, now = new Date()): boolean {
+  const result = getDbInstance()
+    .prepare(
+      `INSERT INTO telegram_bot_state
+       (singleton_id, owner_id, lease_expires_at, last_processed_update_id, updated_at)
+       VALUES (1, NULL, NULL, ?, ?)
+       ON CONFLICT(singleton_id) DO UPDATE SET
+         last_processed_update_id = excluded.last_processed_update_id,
+         updated_at = excluded.updated_at
+       WHERE telegram_bot_state.last_processed_update_id IS NULL
+          OR telegram_bot_state.last_processed_update_id <= excluded.last_processed_update_id`
+    )
+    .run(updateId, toMillis(now));
   return result.changes === 1;
 }
 
@@ -299,4 +350,43 @@ export function __testListClaims(): Array<Record<string, unknown>> {
     )
     .all()
     .map((row) => rowToCamel(row) ?? {});
+}
+
+export function __testGetTelegramAlertDelivery(
+  subscriptionId: string,
+  dedupeKey: string
+): {
+  status: string;
+  attemptCount: number;
+  telegramMessageId: string | null;
+  lastErrorCode: TelegramAlertDeliveryErrorCode | null;
+  retryAt: string | null;
+  deliveredAt: string | null;
+} | null {
+  const row = getDbInstance()
+    .prepare(
+      `SELECT status, attempt_count, telegram_message_id, last_error_code, retry_at, delivered_at
+       FROM telegram_alert_deliveries
+       WHERE subscription_id = ? AND dedupe_key = ?`
+    )
+    .get(subscriptionId, dedupeKey) as
+    | {
+        status: string;
+        attempt_count: number;
+        telegram_message_id: string | null;
+        last_error_code: TelegramAlertDeliveryErrorCode | null;
+        retry_at: number | null;
+        delivered_at: number | null;
+      }
+    | undefined;
+  if (!row) return null;
+
+  return {
+    status: row.status,
+    attemptCount: row.attempt_count,
+    telegramMessageId: row.telegram_message_id,
+    lastErrorCode: row.last_error_code,
+    retryAt: toIso(row.retry_at),
+    deliveredAt: toIso(row.delivered_at),
+  };
 }

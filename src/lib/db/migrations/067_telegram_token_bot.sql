@@ -30,8 +30,9 @@ CREATE TABLE IF NOT EXISTS telegram_alert_deliveries (
   subscription_id TEXT NOT NULL,
   dedupe_key TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'reserved',
+  attempt_count INTEGER NOT NULL DEFAULT 0,
   telegram_message_id TEXT,
-  error_message TEXT,
+  last_error_code TEXT,
   retry_at INTEGER,
   delivered_at INTEGER,
   created_at INTEGER NOT NULL,
@@ -45,7 +46,8 @@ CREATE INDEX IF NOT EXISTS idx_telegram_alert_deliveries_retry
 
 CREATE TABLE IF NOT EXISTS telegram_bot_state (
   singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-  owner_id TEXT NOT NULL,
-  lease_expires_at INTEGER NOT NULL,
+  owner_id TEXT,
+  lease_expires_at INTEGER,
+  last_processed_update_id INTEGER,
   updated_at INTEGER NOT NULL
 );
