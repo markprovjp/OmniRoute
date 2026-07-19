@@ -59,7 +59,10 @@ function isClientApiSurface(pathname: string): boolean {
 
 function isCustomerUsagePath(pathname: string): boolean {
   return (
-    pathname === "/usage" || pathname === "/api/customer/usage" || pathname === "/api/customer/logs"
+    pathname === "/usage" ||
+    pathname === "/api/customer/usage" ||
+    pathname === "/api/customer/logs" ||
+    pathname === "/api/customer/telegram-link"
   );
 }
 

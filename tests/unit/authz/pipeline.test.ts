@@ -91,7 +91,7 @@ test("runAuthzPipeline keeps qrouter root host from exposing management UI", asy
   assert.equal(login.status, 404);
 });
 
-test("runAuthzPipeline reserves customer host for the usage checker", async () => {
+test("runAuthzPipeline reserves customer host for the allowed customer APIs", async () => {
   await forceAuthRequired();
 
   const root = await pipeline.runAuthzPipeline(request("https://customer.qrouter.online/"), {
@@ -111,6 +111,14 @@ test("runAuthzPipeline reserves customer host for the usage checker", async () =
     request("https://customer.qrouter.online/api/customer/logs", { method: "POST" }),
     { enforce: true }
   );
+  const telegramLinkApi = await pipeline.runAuthzPipeline(
+    request("https://customer.qrouter.online/api/customer/telegram-link", { method: "POST" }),
+    { enforce: true }
+  );
+  const unrelatedCustomerApi = await pipeline.runAuthzPipeline(
+    request("https://customer.qrouter.online/api/customer/unrelated", { method: "POST" }),
+    { enforce: true }
+  );
   const dashboard = await pipeline.runAuthzPipeline(
     request("https://customer.qrouter.online/dashboard"),
     { enforce: true }
@@ -126,6 +134,9 @@ test("runAuthzPipeline reserves customer host for the usage checker", async () =
   assert.equal(usageApi.headers.get("x-omniroute-route-class"), "PUBLIC");
   assert.equal(logsApi.status, 200);
   assert.equal(logsApi.headers.get("x-omniroute-route-class"), "PUBLIC");
+  assert.equal(telegramLinkApi.status, 200);
+  assert.equal(telegramLinkApi.headers.get("x-omniroute-route-class"), "PUBLIC");
+  assert.equal(unrelatedCustomerApi.status, 404);
   assert.equal(dashboard.status, 404);
 });
 
