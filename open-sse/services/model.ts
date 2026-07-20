@@ -97,6 +97,21 @@ for (const [aliasOrId, models] of Object.entries(PROVIDER_MODELS)) {
 const KNOWN_MODEL_IDS = new Set(MODEL_TO_PROVIDERS.keys());
 const CODEX_PREFERRED_UNPREFIXED_MODEL_ALIASES = new Map([["gpt-5.5", "gpt-5.5-medium"]]);
 export const CODEX_NATIVE_UNPREFIXED_MODELS = new Set(["codex-auto-review"]);
+export const CODEX_BARE_MODEL_ALIASES = new Set([
+  "gpt-5.6-sol",
+  "gpt-5.5",
+  "gpt-5.5-xhigh",
+  "gpt-5.5-high",
+  "gpt-5.5-medium",
+  "gpt-5.5-low",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex-spark",
+  "gpt-5.3-codex",
+  "gpt-5.2",
+  "gpt-5.6-luna",
+  "gpt-5.6-terra",
+]);
 
 interface ProviderConnectionLike {
   provider?: unknown;
@@ -409,6 +424,18 @@ async function resolveModelByProviderInference(modelId: string, extendedContext:
   }
 
   const activeProviders = await getActiveProviderSet();
+
+  if (
+    activeProviders?.has("codex") &&
+    !activeProviders.has("openai") &&
+    CODEX_BARE_MODEL_ALIASES.has(modelId)
+  ) {
+    return {
+      provider: "codex",
+      model: modelId,
+      extendedContext,
+    };
+  }
 
   if (
     activeProviders?.has("codex") &&

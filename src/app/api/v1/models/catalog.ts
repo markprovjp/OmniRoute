@@ -16,7 +16,10 @@ import { getAllModerationModels } from "@omniroute/open-sse/config/moderationReg
 import { getAllVideoModels } from "@omniroute/open-sse/config/videoRegistry";
 import { getAllMusicModels } from "@omniroute/open-sse/config/musicRegistry";
 import { REGISTRY } from "@omniroute/open-sse/config/providerRegistry";
-import { CODEX_NATIVE_UNPREFIXED_MODELS } from "@omniroute/open-sse/services/model";
+import {
+  CODEX_BARE_MODEL_ALIASES,
+  CODEX_NATIVE_UNPREFIXED_MODELS,
+} from "@omniroute/open-sse/services/model";
 import { resolveNestedComboTargets } from "@omniroute/open-sse/services/combo";
 import { getAllSyncedAvailableModels } from "@/lib/db/models";
 import { getCompatibleFallbackModels } from "@/lib/providers/managedAvailableModels";
@@ -833,6 +836,9 @@ export async function getUnifiedModelsResponse(
       if (!isProviderActive(imgModel.provider)) continue;
       const rawModelId = imgModel.id.split("/").pop() || imgModel.id;
       if (!providerSupportsModel(imgModel.provider, rawModelId)) continue;
+      if (hasEquivalentSpecialtyModel(imgModel.provider, rawModelId, "image", imgModel.id)) {
+        continue;
+      }
       models.push({
         id: imgModel.id,
         object: "model",
@@ -1076,6 +1082,26 @@ export async function getUnifiedModelsResponse(
           parent: null,
           ...(contextLength ? { context_length: contextLength } : {}),
           ...(visionFields || {}),
+        });
+      }
+    }
+
+    const codexAlias = providerIdToAlias.codex || "cx";
+    const hasActiveCodex = activeAliases.has("codex") || activeAliases.has(codexAlias);
+    const hasActiveOpenAI = activeAliases.has("openai");
+
+    if (hasActiveCodex && !hasActiveOpenAI) {
+      for (const modelId of CODEX_BARE_MODEL_ALIASES) {
+        const prefixedModel = models.find(
+          (model) => model.id === `${codexAlias}/${modelId}` || model.id === `codex/${modelId}`
+        );
+        if (!prefixedModel || models.some((model) => model.id === modelId)) continue;
+
+        models.push({
+          ...prefixedModel,
+          id: modelId,
+          root: modelId,
+          parent: prefixedModel.id,
         });
       }
     }

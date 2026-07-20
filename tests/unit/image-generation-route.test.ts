@@ -37,6 +37,34 @@ async function seedConnection(provider: string, overrides: { apiKey?: string | n
   });
 }
 
+async function seedCodexConnection(accessToken: string, priority: number) {
+  return providersDb.createProviderConnection({
+    provider: "codex",
+    authType: "oauth",
+    name: `codex-${priority}`,
+    email: `codex-${priority}@example.com`,
+    priority,
+    accessToken,
+    isActive: true,
+    testStatus: "active",
+    providerSpecificData: { workspaceId: `workspace-${priority}` },
+  });
+}
+
+function codexImageSuccessResponse(imageBase64 = "Y29kZXgtaW1hZ2U=") {
+  return new Response(
+    `data: ${JSON.stringify({
+      type: "response.output_item.done",
+      item: {
+        type: "image_generation_call",
+        result: imageBase64,
+        revised_prompt: "A refined image prompt",
+      },
+    })}\n\ndata: [DONE]\n\n`,
+    { status: 200, headers: { "content-type": "text/event-stream" } }
+  );
+}
+
 test.beforeEach(async () => {
   await resetStorage();
 });
@@ -173,6 +201,7 @@ test("v1 image generation POST resolves proxy and executes with proxy context wh
   assert.equal(response.status, 503);
   const body = (await response.json()) as any;
   assert.match(body.error.message, /unreachable/i);
+  assert.equal(body.error.message_vi, "Dịch vụ AI tạm thời không khả dụng. Vui lòng thử lại sau.");
 });
 
 test("v1 image generation POST executes directly when proxy resolution fails gracefully", async () => {
@@ -236,4 +265,90 @@ test("v1 image generation POST executes directly when credentials.connectionId i
   const body = (await response.json()) as any;
   assert.equal(response.status, 200);
   assert.ok(body.data, "should have image data");
+});
+
+test("v1 Codex image generation rotates to the next account after usage_limit_reached", async () => {
+  const exhausted = await seedCodexConnection("codex-exhausted-token", 1);
+  await seedCodexConnection("codex-healthy-token", 2);
+  let attempts = 0;
+
+  globalThis.fetch = async (url, options = {}) => {
+    assert.equal(String(url), "https://chatgpt.com/backend-api/codex/responses");
+    attempts += 1;
+    const authorization = new Headers(options.headers).get("authorization");
+    if (authorization === "Bearer codex-exhausted-token") {
+      return new Response(
+        JSON.stringify({
+          error: {
+            type: "usage_limit_reached",
+            message: "The usage limit has been reached",
+            plan_type: "plus",
+            resets_at: Math.floor(Date.now() / 1000) + 488_892,
+            eligible_promo: null,
+            resets_in_seconds: 488_892,
+          },
+        }),
+        { status: 429, headers: { "content-type": "application/json" } }
+      );
+    }
+    assert.equal(authorization, "Bearer codex-healthy-token");
+    return codexImageSuccessResponse();
+  };
+
+  const response = await imageRoute.POST(
+    new Request("http://localhost/api/v1/images/generations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "codex/gpt-5.5",
+        prompt: "A polished product photograph",
+        response_format: "b64_json",
+      }),
+    })
+  );
+  const body = (await response.json()) as any;
+  const exhaustedAfter = await providersDb.getProviderConnectionById((exhausted as any).id);
+
+  assert.equal(response.status, 200);
+  assert.equal(attempts, 2);
+  assert.equal(body.data[0].b64_json, "Y29kZXgtaW1hZ2U=");
+  assert.equal((exhaustedAfter as any).testStatus, "unavailable");
+  const scopeReset = (exhaustedAfter as any).providerSpecificData.codexScopeRateLimitedUntil.codex;
+  assert.ok(new Date(scopeReset).getTime() - Date.now() > 488_000_000);
+});
+
+test("v1 Codex image generation returns a localized 429 with the real reset window when all accounts are exhausted", async () => {
+  await seedCodexConnection("codex-only-exhausted-token", 1);
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        error: {
+          type: "usage_limit_reached",
+          message: "The usage limit has been reached",
+          plan_type: "plus",
+          resets_at: Math.floor(Date.now() / 1000) + 488_892,
+          eligible_promo: null,
+          resets_in_seconds: 488_892,
+        },
+      }),
+      { status: 429, headers: { "content-type": "application/json" } }
+    );
+
+  const response = await imageRoute.POST(
+    new Request("http://localhost/api/v1/images/generations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "codex/gpt-5.5",
+        prompt: "A polished product photograph",
+      }),
+    })
+  );
+  const body = (await response.json()) as any;
+
+  assert.equal(response.status, 429);
+  assert.ok(Number(response.headers.get("retry-after")) > 488_000);
+  assert.match(body.error.message, /All Codex accounts.*Plus usage limit/i);
+  assert.match(body.error.message_vi, /hạn mức Plus/i);
 });

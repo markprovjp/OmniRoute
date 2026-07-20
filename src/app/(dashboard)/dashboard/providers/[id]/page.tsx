@@ -3752,6 +3752,18 @@ export default function ProviderDetailPage() {
                       <Button size="sm" icon="add" onClick={openPrimaryAddFlow}>
                         {providerSupportsPat ? "Add PAT" : t("add")}
                       </Button>
+                      {providerId === "codex" && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          icon="upload_file"
+                          onClick={() => setImportCodexModalOpen(true)}
+                        >
+                          {typeof t.has === "function" && t.has("importCodexAuth")
+                            ? t("importCodexAuth")
+                            : "Import auth"}
+                        </Button>
+                      )}
                       {providerId === "qoder" && (
                         <Button
                           size="sm"
@@ -6440,9 +6452,10 @@ function ConnectionRow({
 
   return (
     <div
-      className={`group flex items-center justify-between p-3 rounded-lg hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors ${connection.isActive === false ? "opacity-60" : ""}`}
+      data-testid={`connection-row-${connection.id || "primary"}`}
+      className={`group flex flex-col items-stretch gap-3 p-3 rounded-lg hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors md:flex-row md:items-center md:justify-between ${connection.isActive === false ? "opacity-60" : ""}`}
     >
-      <div className="flex items-center gap-3 flex-1 min-w-0">
+      <div className="flex w-full min-w-0 flex-1 items-start gap-2 sm:gap-3 md:items-center">
         {onToggleSelect && (
           <input
             type="checkbox"
@@ -6473,7 +6486,7 @@ function ConnectionRow({
         </span>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium truncate">{displayName}</p>
-          <div className="flex items-center gap-2 mt-1 flex-wrap">
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 [&>button]:shrink-0 [&>button]:whitespace-nowrap [&>span]:shrink-0">
             <Badge variant={statusPresentation.statusVariant as any} size="sm" dot>
               {statusPresentation.statusLabel}
             </Badge>
@@ -6770,7 +6783,7 @@ function ConnectionRow({
           )}
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex w-full flex-wrap items-center gap-2 border-t border-border/60 pt-2 md:w-auto md:flex-nowrap md:border-t-0 md:pt-0">
         <Button
           size="sm"
           variant="ghost"

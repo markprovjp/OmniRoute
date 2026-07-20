@@ -58,6 +58,13 @@ test("next config exposes standalone build settings and canonical rewrites", asy
   ]);
 });
 
+test("next config keeps proxy body cloning aligned with the 200 MB request limit", async () => {
+  const { default: nextConfig } = await loadNextConfig("large-request-body");
+
+  assert.equal(nextConfig.experimental.proxyClientMaxBodySize, "200mb");
+  assert.equal(nextConfig.experimental.serverActions.bodySizeLimit, "200mb");
+});
+
 test("next config declares Turbopack aliases, runtime assets and server externals", async () => {
   const { default: nextConfig } = await loadNextConfig("runtime-assets");
   const serverExternalPackages = new Set(nextConfig.serverExternalPackages);

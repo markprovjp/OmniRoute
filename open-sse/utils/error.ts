@@ -11,6 +11,7 @@ import type { ModelCooldownErrorPayload } from "@/types";
 interface ErrorResponseBody {
   error: {
     message: string;
+    message_vi: string;
     type?: string;
     code?: string;
   };
@@ -20,6 +21,66 @@ interface ErrorResponseBody {
 // Length cap protects against pathological inputs even before tokenization.
 const MAX_ERROR_LEN = 4096;
 const SOURCE_EXT = ["ts", "tsx", "js", "jsx", "mjs", "cjs"] as const;
+
+const VI_ERROR_MESSAGES: Record<number, string> = {
+  400: "Yêu cầu không hợp lệ. Vui lòng kiểm tra lại dữ liệu gửi lên.",
+  401: "Khóa API không hợp lệ hoặc chưa được cung cấp. Vui lòng kiểm tra lại khóa.",
+  402: "Tài khoản chưa đáp ứng yêu cầu thanh toán hoặc số dư. Vui lòng liên hệ quản trị viên.",
+  403: "Khóa API không có quyền truy cập, đã bị khóa hoặc đã hết hạn.",
+  404: "Không tìm thấy model hoặc tài nguyên được yêu cầu.",
+  406: "Model được yêu cầu chưa được hệ thống hỗ trợ.",
+  408: "Yêu cầu đã hết thời gian chờ. Vui lòng thử lại.",
+  429: "Hệ thống đang nhận quá nhiều yêu cầu. Vui lòng thử lại sau ít phút.",
+  500: "Hệ thống gặp lỗi nội bộ. Vui lòng thử lại sau hoặc liên hệ quản trị viên.",
+  502: "Nhà cung cấp AI đang phản hồi lỗi. Vui lòng thử lại hoặc chọn model khác.",
+  503: "Dịch vụ AI tạm thời không khả dụng. Vui lòng thử lại sau.",
+  504: "Nhà cung cấp AI phản hồi quá chậm. Vui lòng thử lại.",
+};
+
+function getVietnameseErrorMessage(statusCode: number, safeMessage: string): string {
+  if (statusCode === 429 && safeMessage.toLowerCase().includes("token limit")) {
+    return "Khóa API đã sử dụng hết hạn mức token. Vui lòng nâng hạn mức hoặc liên hệ quản trị viên.";
+  }
+
+  if (
+    statusCode === 429 &&
+    /codex.*(?:plus usage limit|usage limit)|usage_limit_reached/i.test(safeMessage)
+  ) {
+    return "Tất cả tài khoản Codex hiện đã hết hạn mức Plus. Hệ thống sẽ tự thử lại sau thời gian đặt lại được thông báo.";
+  }
+
+  return (
+    VI_ERROR_MESSAGES[statusCode] ||
+    "Yêu cầu không thành công. Vui lòng thử lại hoặc liên hệ quản trị viên."
+  );
+}
+
+export function addVietnameseMessageToErrorPayload(statusCode: number, payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return buildErrorBody(statusCode, getDefaultErrorMessage(statusCode));
+  }
+
+  const body = payload as Record<string, unknown>;
+  const error = body.error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) {
+    return buildErrorBody(statusCode, getDefaultErrorMessage(statusCode));
+  }
+
+  const sanitizedBody = sanitizeUpstreamDetails(body) as Record<string, unknown>;
+  const errorObject = (sanitizeUpstreamDetails(error) || {}) as Record<string, unknown>;
+  const safeMessage =
+    sanitizeErrorMessage((error as Record<string, unknown>).message) ||
+    getDefaultErrorMessage(statusCode);
+
+  return {
+    ...sanitizedBody,
+    error: {
+      ...errorObject,
+      message: safeMessage,
+      message_vi: getVietnameseErrorMessage(statusCode, safeMessage),
+    },
+  };
+}
 
 function looksLikeAbsolutePath(tok: string): boolean {
   // POSIX: "/<...>.ts" (optionally followed by :line[:col]).
@@ -104,6 +165,7 @@ export function buildErrorBody(
   const body: ErrorResponseBody = {
     error: {
       message: safeMessage,
+      message_vi: getVietnameseErrorMessage(statusCode, safeMessage),
       type: errorInfo.type,
       code: errorInfo.code,
     },
@@ -354,7 +416,7 @@ export function unavailableResponse(
 ) {
   const retryAfterSec = normalizeRetryAfterSeconds(retryAfter);
   const msg = retryAfterHuman ? `${message} (${retryAfterHuman})` : message;
-  return new Response(JSON.stringify({ error: { message: msg } }), {
+  return new Response(JSON.stringify(buildErrorBody(statusCode, msg)), {
     status: statusCode,
     headers: {
       "Content-Type": "application/json",
@@ -368,25 +430,19 @@ export function providerCircuitOpenResponse(
   retryAfter?: string | number | Date | null
 ) {
   const retryAfterSec = normalizeRetryAfterSeconds(retryAfter);
-  return new Response(
-    JSON.stringify({
-      error: {
-        message: `Provider ${provider} circuit breaker is open`,
-        type: "server_error",
-        code: "provider_circuit_open",
-        provider,
-        retry_after: retryAfterSec,
-      },
-    }),
-    {
-      status: 503,
-      headers: {
-        "Content-Type": "application/json",
-        "Retry-After": String(retryAfterSec),
-        "X-OmniRoute-Provider-Breaker": "open",
-      },
-    }
-  );
+  const body = buildErrorBody(503, `Provider ${provider} circuit breaker is open`);
+  const error = body.error as typeof body.error & Record<string, unknown>;
+  error.code = "provider_circuit_open";
+  error.provider = provider;
+  error.retry_after = retryAfterSec;
+  return new Response(JSON.stringify(body), {
+    status: 503,
+    headers: {
+      "Content-Type": "application/json",
+      "Retry-After": String(retryAfterSec),
+      "X-OmniRoute-Provider-Breaker": "open",
+    },
+  });
 }
 
 export function buildModelCooldownBody({
@@ -397,18 +453,20 @@ export function buildModelCooldownBody({
   retryAfterSec: number;
 }): ModelCooldownErrorPayload {
   const resolvedModel = typeof model === "string" && model.trim().length > 0 ? model.trim() : null;
+  const message = resolvedModel
+    ? `All credentials for model ${resolvedModel} are cooling down`
+    : "All credentials for the requested model are cooling down";
+  const body = buildErrorBody(429, message);
 
   return {
     error: {
-      message: resolvedModel
-        ? `All credentials for model ${resolvedModel} are cooling down`
-        : "All credentials for the requested model are cooling down",
+      ...body.error,
       type: "rate_limit_error",
       code: "model_cooldown",
       ...(resolvedModel ? { model: resolvedModel } : {}),
       reset_seconds: Math.max(Math.ceil(retryAfterSec), 1),
     },
-  };
+  } as ModelCooldownErrorPayload;
 }
 
 export function modelCooldownResponse({

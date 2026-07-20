@@ -93,6 +93,39 @@ test("a claim cannot replace another API key's chat subscription", async () => {
   assert.equal(telegramDb.getTelegramSubscriptionByChat("12345")?.apiKeyId, firstKey.id);
 });
 
+test("direct API-key linking creates an idempotent subscription and rejects unknown keys", async () => {
+  const key = await createKey();
+  const now = new Date("2026-07-19T00:00:00.000Z");
+
+  const first = telegramDb.connectTelegramSubscription(key.id, "12345", now);
+  const repeated = telegramDb.connectTelegramSubscription(key.id, "12345", now);
+  const unknown = telegramDb.connectTelegramSubscription("missing-key", "99999", now);
+
+  assert.equal(first?.apiKeyId, key.id);
+  assert.deepEqual(repeated, first);
+  assert.equal(unknown, null);
+  assert.deepEqual(telegramDb.getTelegramSubscriptionByChat("12345"), first);
+});
+
+test("direct API-key linking rejects expired, inactive, banned, and revoked keys", async () => {
+  const now = new Date("2026-07-19T00:00:00.000Z");
+  const expired = await apiKeysDb.createApiKey("Expired", "telegram-bot-test-machine", {
+    expiresAt: "2026-07-18T23:59:59.000Z",
+  });
+  const inactive = await createKey("Inactive");
+  const banned = await createKey("Banned");
+  const revoked = await createKey("Revoked");
+  await apiKeysDb.updateApiKeyPermissions(inactive.id, { isActive: false });
+  await apiKeysDb.updateApiKeyPermissions(banned.id, { isBanned: true });
+  await apiKeysDb.revokeApiKey(revoked.id);
+
+  assert.equal(telegramDb.connectTelegramSubscription(expired.id, "10001", now), null);
+  assert.equal(telegramDb.connectTelegramSubscription(inactive.id, "10002", now), null);
+  assert.equal(telegramDb.connectTelegramSubscription(banned.id, "10003", now), null);
+  assert.equal(telegramDb.connectTelegramSubscription(revoked.id, "10004", now), null);
+  assert.deepEqual(telegramDb.listActiveTelegramSubscriptions(), []);
+});
+
 test("subscriptions can be muted and disconnected", async () => {
   const key = await createKey();
   const now = new Date("2026-07-19T00:00:00.000Z");

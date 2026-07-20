@@ -250,12 +250,12 @@ test("getUsageStats aggregates totals, buckets, pending requests, and cost break
     (await calculateCost("pricing-provider", "pricing-model", oldTokens));
 
   assert.equal(stats.totalRequests, 2);
-  assert.equal(stats.totalPromptTokens, 140);
+  assert.equal(stats.totalPromptTokens, 110);
   assert.equal(stats.totalCompletionTokens, 60);
   assert.ok(Math.abs(stats.totalCost - expectedCost) < 1e-9);
 
   assert.equal(stats.byProvider["pricing-provider"].requests, 2);
-  assert.equal(stats.byProvider["pricing-provider"].promptTokens, 140);
+  assert.equal(stats.byProvider["pricing-provider"].promptTokens, 110);
   assert.equal(stats.byModel["pricing-model (pricing-provider)"].requests, 2);
 
   const accountKey = "pricing-model (pricing-provider - Primary Account)";

@@ -129,3 +129,27 @@ test("auth login route accepts a changed INITIAL_PASSWORD and persists the new h
     false
   );
 });
+
+test("auth login route persists the secure dashboard session for 30 days", async () => {
+  process.env.INITIAL_PASSWORD = "persistent-session-secret";
+  const setCalls: unknown[][] = [];
+  loginRoute.authRouteInternals.getCookieStore = async () => ({
+    set: (...args: unknown[]) => setCalls.push(args),
+  });
+
+  const response = await loginRoute.POST(
+    new Request("https://localhost/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-proto": "https" },
+      body: JSON.stringify({ password: "persistent-session-secret" }),
+    })
+  );
+  const cookieOptions = setCalls[0]?.[2] as Record<string, unknown>;
+
+  assert.equal(response.status, 200);
+  assert.equal(cookieOptions.httpOnly, true);
+  assert.equal(cookieOptions.secure, true);
+  assert.equal(cookieOptions.sameSite, "lax");
+  assert.equal(cookieOptions.path, "/");
+  assert.equal(cookieOptions.maxAge, 30 * 24 * 60 * 60);
+});

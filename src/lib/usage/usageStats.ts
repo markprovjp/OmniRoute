@@ -12,6 +12,7 @@ import { getApiKeys } from "../db/apiKeys";
 import { getPendingRequests } from "./usageHistory";
 import { getAccountDisplayName } from "@/lib/display/names";
 import { calculateCost } from "./costCalculator";
+import { getNonCachedInputTokens } from "./tokenAccounting";
 import { getRawDataCutoffDate, isAggregationEnabled } from "./aggregateHistory";
 
 type JsonRecord = Record<string, unknown>;
@@ -215,7 +216,6 @@ export async function getUsageStats() {
     const apiKeyName = toStringOrEmpty(row.api_key_name) || null;
     const serviceTier = toStringOrEmpty(row.service_tier) || "standard";
 
-    const promptTokens = toNumber(row.tokens_input);
     const completionTokens = toNumber(row.tokens_output);
     const entryTime = new Date(timestamp);
 
@@ -227,6 +227,7 @@ export async function getUsageStats() {
       reasoning: toNumber(row.tokens_reasoning),
     };
     const entryCost = await calculateCost(provider, model, entryTokens, { serviceTier });
+    const promptTokens = getNonCachedInputTokens(entryTokens);
 
     stats.totalPromptTokens += promptTokens;
     stats.totalCompletionTokens += completionTokens;

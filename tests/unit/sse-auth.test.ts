@@ -1069,6 +1069,34 @@ test("markAccountUnavailable returns without fallback on bad requests", async ()
   assert.equal(updated.rateLimitedUntil, undefined);
 });
 
+test("markAccountUnavailable rotates Codex accounts when a model is unavailable", async () => {
+  const connection = await seedConnection("codex", {
+    authType: "oauth",
+    name: "codex-model-unavailable",
+    apiKey: null,
+    accessToken: "codex-access",
+    refreshToken: "codex-refresh",
+  });
+
+  const result = await auth.markAccountUnavailable(
+    connection.id,
+    400,
+    "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+    "codex",
+    "gpt-5.6-sol"
+  );
+  await flushWrites();
+  const updated = await providersDb.getProviderConnectionById(connection.id);
+  const selected = await auth.getProviderCredentials("codex", null, null, "gpt-5.6-sol");
+
+  assert.equal(result.shouldFallback, true);
+  assert.ok(result.cooldownMs > 0);
+  assert.equal(updated.testStatus, "active");
+  assert.equal(updated.rateLimitedUntil, undefined);
+  assert.equal(updated.lastErrorType, "model_unavailable");
+  assert.equal(selected.allRateLimited, true);
+});
+
 test("markAccountUnavailable preserves terminal statuses without overwriting them", async () => {
   const connection = await seedConnection("openai", {
     name: "terminal-status",

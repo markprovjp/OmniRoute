@@ -1,0 +1,26 @@
+FROM node:26.2.0-trixie-slim AS builder
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps
+
+COPY . ./
+RUN npm run build:telegram
+
+FROM node:26.2.0-trixie-slim AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV DATA_DIR=/app/data
+ENV OMNIROUTE_MIGRATIONS_DIR=/app/migrations
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /app/data
+
+COPY --from=builder /app/.dist/telegram ./telegram
+COPY --from=builder /app/src/lib/db/migrations ./migrations
+
+VOLUME ["/app/data"]
+CMD ["node", "telegram/telegram-token-bot.mjs"]

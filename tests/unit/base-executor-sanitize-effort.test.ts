@@ -102,6 +102,16 @@ test("sanitizeReasoningEffortForProvider: codex with xhigh passes through unchan
   );
 });
 
+test("sanitizeReasoningEffortForProvider: codex GPT-5.6 Sol preserves xhigh", () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    reasoning: { effort: "xhigh" },
+    messages: [],
+  };
+  const result = sanitizeReasoningEffortForProvider(body, "codex", "gpt-5.6-sol", null);
+  assert.equal((result as any).reasoning.effort, "xhigh");
+});
+
 test("sanitizeReasoningEffortForProvider: no-op when reasoning_effort absent", () => {
   const body = { model: "mimo-v2.5-pro", messages: [] };
   const result = sanitizeReasoningEffortForProvider(body, "xiaomi-mimo", "mimo-v2.5-pro", null);

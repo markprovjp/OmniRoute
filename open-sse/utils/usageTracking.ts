@@ -7,6 +7,7 @@ import { appendRequestLog } from "@/lib/usageDb";
 import {
   getLoggedInputTokens,
   getLoggedOutputTokens,
+  getNonCachedInputTokens,
   getPromptCacheCreationTokens,
   getPromptCacheReadTokens,
 } from "@/lib/usage/tokenAccounting";
@@ -518,7 +519,8 @@ export function logUsage(
   // Support both formats:
   // - OpenAI: prompt_tokens, completion_tokens
   // - Claude: input_tokens, output_tokens
-  const inTokens = getLoggedInputTokens(usage);
+  const rawInputTokens = getLoggedInputTokens(usage);
+  const inTokens = getNonCachedInputTokens(usage);
   const outTokens = getLoggedOutputTokens(usage);
   void apiKeyInfo;
   const normalizedConnectionId = typeof connectionId === "string" ? connectionId : undefined;
@@ -548,7 +550,7 @@ export function logUsage(
   // Streaming requests persist usage once in chatCore's completion callback.
   // Keep this helper side-effect free apart from console visibility.
   const tokens = {
-    input: inTokens,
+    input: rawInputTokens,
     output: outTokens,
     cacheRead: cacheRead || 0,
     cacheCreation: cacheCreation || 0,

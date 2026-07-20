@@ -204,6 +204,84 @@ export function consumeTelegramLinkClaim(
   return subscription;
 }
 
+export function connectTelegramSubscription(
+  apiKeyId: string,
+  chatId: string,
+  now = new Date()
+): TelegramSubscription | null {
+  const db = getDbInstance();
+  const nowMs = toMillis(now);
+  let subscription: TelegramSubscription | null = null;
+
+  db.immediate(() => {
+    const apiKey = db
+      .prepare(
+        `SELECT id, is_active, is_banned, revoked_at, expires_at
+         FROM api_keys
+         WHERE id = ?`
+      )
+      .get(apiKeyId) as
+      | {
+          id: string;
+          is_active: number;
+          is_banned: number;
+          revoked_at: string | null;
+          expires_at: string | null;
+        }
+      | undefined;
+    if (!apiKey || !apiKey.is_active || apiKey.is_banned || apiKey.revoked_at) return;
+    if (apiKey.expires_at) {
+      const expiresAt = Date.parse(apiKey.expires_at);
+      if (Number.isFinite(expiresAt) && expiresAt <= nowMs) return;
+    }
+
+    const existing = db
+      .prepare(
+        `SELECT id, api_key_id, chat_id, is_active, muted_until, created_at, updated_at, disconnected_at
+         FROM telegram_subscriptions
+         WHERE api_key_id = ?`
+      )
+      .get(apiKeyId) as TelegramSubscriptionRow | undefined;
+    if (existing?.is_active) {
+      subscription = existing.chat_id === chatId ? mapSubscription(existing) : null;
+      return;
+    }
+
+    const chatOwner = db
+      .prepare("SELECT api_key_id FROM telegram_subscriptions WHERE chat_id = ?")
+      .get(chatId) as { api_key_id: string } | undefined;
+    if (chatOwner && chatOwner.api_key_id !== apiKeyId) return;
+
+    if (existing) {
+      const reactivated = db
+        .prepare(
+          `UPDATE telegram_subscriptions
+           SET chat_id = ?, is_active = 1, muted_until = NULL, updated_at = ?, disconnected_at = NULL
+           WHERE id = ? AND is_active = 0`
+        )
+        .run(chatId, nowMs, existing.id);
+      if (reactivated.changes !== 1) throw new Error("Failed to reactivate Telegram subscription");
+    } else {
+      db.prepare(
+        `INSERT INTO telegram_subscriptions
+         (id, api_key_id, chat_id, is_active, muted_until, created_at, updated_at, disconnected_at)
+         VALUES (?, ?, ?, 1, NULL, ?, ?, NULL)`
+      ).run(randomUUID(), apiKeyId, chatId, nowMs, nowMs);
+    }
+
+    const row = db
+      .prepare(
+        `SELECT id, api_key_id, chat_id, is_active, muted_until, created_at, updated_at, disconnected_at
+         FROM telegram_subscriptions
+         WHERE api_key_id = ? AND is_active = 1`
+      )
+      .get(apiKeyId) as TelegramSubscriptionRow | undefined;
+    subscription = row ? mapSubscription(row) : null;
+  });
+
+  return subscription;
+}
+
 export function getTelegramSubscriptionByChat(chatId: string): TelegramSubscription | null {
   const row = getDbInstance()
     .prepare(

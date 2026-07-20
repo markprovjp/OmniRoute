@@ -1,9 +1,11 @@
 import { handleImageGeneration } from "@omniroute/open-sse/handlers/imageGeneration.ts";
 import {
   getProviderCredentials,
+  getProviderCredentialsWithQuotaPreflight,
   clearRecoveredProviderState,
   extractApiKey,
   isValidApiKey,
+  markAccountUnavailable,
 } from "@/sse/services/auth";
 import {
   parseImageModel,
@@ -11,7 +13,11 @@ import {
   getImageProvider,
   getImageModelEntry,
 } from "@omniroute/open-sse/config/imageRegistry.ts";
-import { errorResponse, unavailableResponse } from "@omniroute/open-sse/utils/error.ts";
+import {
+  addVietnameseMessageToErrorPayload,
+  errorResponse,
+  unavailableResponse,
+} from "@omniroute/open-sse/utils/error.ts";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import * as log from "@/sse/utils/logger";
 import { toJsonErrorPayload } from "@/shared/utils/upstreamError";
@@ -139,7 +145,8 @@ export async function POST(request) {
   if (policy.rejection) return policy.rejection;
 
   // Parse model to get provider
-  let { provider } = parseImageModel(body.model);
+  const parsedImageModel = parseImageModel(body.model);
+  let { provider } = parsedImageModel;
   let isCustomModel = false;
 
   // If not in built-in registry, check custom models tagged for images
@@ -193,82 +200,125 @@ export async function POST(request) {
     );
   }
 
-  // Get credentials — skip for local providers (authType: "none")
-  let credentials = null;
-  if (providerConfig && providerConfig.authType !== "none") {
-    credentials = await getProviderCredentials(provider);
-    if (!credentials) {
-      return errorResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        `No credentials for image provider: ${provider}`
-      );
+  const isCodexImage = providerConfig?.format === "codex-responses";
+  const requestedImageModel = parsedImageModel.model || body.model;
+  const excludedCodexConnections = new Set<string>();
+  let credentials: any = null;
+  let result: any = null;
+
+  while (true) {
+    // Codex image generation shares the same OAuth account pool as chat. Use
+    // quota-aware selection and exclude every account that fails during this
+    // request so a Plus-quota 429 can immediately rotate to a healthy account.
+    if (providerConfig && providerConfig.authType !== "none") {
+      credentials = isCodexImage
+        ? await getProviderCredentialsWithQuotaPreflight(
+            provider,
+            null,
+            null,
+            requestedImageModel,
+            { excludeConnectionIds: Array.from(excludedCodexConnections) }
+          )
+        : await getProviderCredentials(provider);
+      if (!credentials) {
+        return errorResponse(
+          HTTP_STATUS.BAD_REQUEST,
+          `No credentials for image provider: ${provider}`
+        );
+      }
+      if (credentials.allRateLimited) {
+        const codexUsageLimit =
+          isCodexImage &&
+          /usage_limit_reached|usage limit has been reached/i.test(credentials.lastError || "");
+        return unavailableResponse(
+          HTTP_STATUS.RATE_LIMITED,
+          codexUsageLimit
+            ? "All Codex accounts have reached their Plus usage limit"
+            : `[${provider}] All accounts rate limited`,
+          credentials.retryAfter,
+          credentials.retryAfterHuman
+        );
+      }
+    } else if (isCustomModel) {
+      credentials = await getProviderCredentials(provider);
+      if (!credentials) {
+        return errorResponse(
+          HTTP_STATUS.BAD_REQUEST,
+          `No credentials for custom image provider: ${provider}`
+        );
+      }
+      if (credentials.allRateLimited) {
+        return unavailableResponse(
+          HTTP_STATUS.RATE_LIMITED,
+          `[${provider}] All accounts rate limited`,
+          credentials.retryAfter,
+          credentials.retryAfterHuman
+        );
+      }
     }
-    if (credentials.allRateLimited) {
-      return unavailableResponse(
-        HTTP_STATUS.RATE_LIMITED,
-        `[${provider}] All accounts rate limited`,
-        credentials.retryAfter,
-        credentials.retryAfterHuman
-      );
+
+    let proxyInfo = null;
+    if (credentials?.connectionId) {
+      try {
+        proxyInfo = await resolveProxyForConnection(credentials.connectionId);
+      } catch {
+        log.debug("PROXY", `Failed to resolve proxy for image provider: ${provider}`);
+      }
     }
-  } else if (isCustomModel) {
-    credentials = await getProviderCredentials(provider);
-    if (!credentials) {
-      return errorResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        `No credentials for custom image provider: ${provider}`
-      );
+
+    const generateImage = () =>
+      handleImageGeneration({
+        body,
+        credentials,
+        log,
+        ...(isCustomModel && { resolvedProvider: provider }),
+        signal: request.signal,
+        clientHeaders: publicBaseUrlHeaders(request.headers),
+      });
+
+    result = await (credentials?.connectionId
+      ? runWithProxyContext(proxyInfo?.proxy || null, generateImage).catch((err: any) => ({
+          success: false,
+          status: err.statusCode || 500,
+          error: err.message,
+        }))
+      : generateImage());
+
+    if (result.success) {
+      await clearRecoveredProviderState(credentials);
+      return new Response(JSON.stringify(result.data), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }
-    if (credentials.allRateLimited) {
-      return unavailableResponse(
-        HTTP_STATUS.RATE_LIMITED,
-        `[${provider}] All accounts rate limited`,
-        credentials.retryAfter,
-        credentials.retryAfterHuman
-      );
-    }
+
+    if (!isCodexImage || !credentials?.connectionId) break;
+
+    const status = Number.isInteger(result.status) ? result.status : 500;
+    const errorText =
+      typeof result.error === "string" ? result.error : JSON.stringify(result.error || "");
+    const fallback = await markAccountUnavailable(
+      credentials.connectionId,
+      status,
+      errorText,
+      provider,
+      requestedImageModel
+    );
+    if (!fallback.shouldFallback) break;
+
+    excludedCodexConnections.add(credentials.connectionId);
+    log.warn(
+      "IMAGE",
+      `${provider}/${requestedImageModel} account ${credentials.connectionId.slice(0, 8)} unavailable; retrying another Codex account`
+    );
   }
 
-  // Resolve proxy for the connection if credentials exist (#1904)
-  let proxyInfo = null;
-  if (credentials?.connectionId) {
-    try {
-      proxyInfo = await resolveProxyForConnection(credentials.connectionId);
-    } catch {
-      log.debug("PROXY", `Failed to resolve proxy for image provider: ${provider}`);
-    }
-  }
-
-  const generateImage = () =>
-    handleImageGeneration({
-      body,
-      credentials,
-      log,
-      ...(isCustomModel && { resolvedProvider: provider }),
-      signal: request.signal,
-      clientHeaders: publicBaseUrlHeaders(request.headers),
-    });
-
-  // Execute with proxy context when available, direct otherwise (#1904)
-  const result = await (credentials?.connectionId
-    ? runWithProxyContext(proxyInfo?.proxy || null, generateImage).catch((err: any) => ({
-        success: false,
-        status: err.statusCode || 500,
-        error: err.message,
-      }))
-    : generateImage());
-
-  if (result.success) {
-    await clearRecoveredProviderState(credentials);
-    return new Response(JSON.stringify((result as any).data), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  const errorPayload = toJsonErrorPayload((result as any).error, "Image generation provider error");
+  const errorPayload = addVietnameseMessageToErrorPayload(
+    result.status,
+    toJsonErrorPayload(result.error, "Image generation provider error")
+  );
   return new Response(JSON.stringify(errorPayload), {
-    status: (result as any).status,
+    status: result.status,
     headers: { "Content-Type": "application/json" },
   });
 }

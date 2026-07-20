@@ -6,7 +6,11 @@ import {
   type EmbeddingProviderNodeRow,
   type EmbeddingProvider,
 } from "@omniroute/open-sse/config/embeddingRegistry.ts";
-import { errorResponse, unavailableResponse } from "@omniroute/open-sse/utils/error.ts";
+import {
+  addVietnameseMessageToErrorPayload,
+  errorResponse,
+  unavailableResponse,
+} from "@omniroute/open-sse/utils/error.ts";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import * as log from "@/sse/utils/logger";
 import { toJsonErrorPayload } from "@/shared/utils/upstreamError";
@@ -189,7 +193,10 @@ export async function createEmbeddingResponse(
   }
 
   responseHeaders.set("Content-Type", "application/json");
-  const errorPayload = toJsonErrorPayload(result.error, "Embedding provider error");
+  const errorPayload = addVietnameseMessageToErrorPayload(
+    result.status ?? 500,
+    toJsonErrorPayload(result.error, "Embedding provider error")
+  );
   return new Response(JSON.stringify(errorPayload), {
     status: result.status,
     headers: responseHeaders,

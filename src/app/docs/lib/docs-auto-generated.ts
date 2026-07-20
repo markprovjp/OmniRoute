@@ -110,6 +110,11 @@ export const autoNavSections: AutoGenNavSection[] = [
         title: "User Guide",
         fileName: "guides/USER_GUIDE.md",
       },
+      {
+        slug: "vps-deployment",
+        title: "VPS Deployment and Quota Management Guide",
+        fileName: "guides/vps-deployment.md",
+      },
     ],
   },
   {
@@ -654,6 +659,25 @@ export const autoSearchIndex: AutoGenSearchItem[] = [
     ],
   },
   {
+    slug: "vps-deployment",
+    title: "VPS Deployment and Quota Management Guide",
+    fileName: "guides/vps-deployment.md",
+    section: "Guides",
+    content:
+      "This guide details how to deploy OmniRoute on a Virtual Private Server (VPS) and configure token quotas to control API key distribution for your users. PM2 is a production process manager for Node.js applications with a built-in load balancer. 1. Install Node.js & npm (e.g., on Ubuntu): 2. Clone and",
+    headings: [
+      "1. Prerequisites",
+      "2. Deploying on a VPS",
+      "Option A: Using PM2 (Recommended for Node.js)",
+      "Option B: Using Docker Compose",
+      "3. Reverse Proxy & SSL Setup (Nginx)",
+      "4. Distributing Keys & Controlling Quotas",
+      "Log in to the Admin Dashboard",
+      "Step-by-Step Quota Controls",
+      "5. System Routing vs. Upstream Key Pools",
+    ],
+  },
+  {
     slug: "api-reference",
     title: "API Reference",
     fileName: "reference/API_REFERENCE.md",
@@ -719,7 +743,7 @@ export const autoSearchIndex: AutoGenSearchItem[] = [
     fileName: "reference/FREE_TIERS.md",
     section: "Reference",
     content:
-      "Last consolidated: 2026-05-13 — OmniRoute v3.8.0 Source of truth: src/shared/constants/providers.ts (FREEPROVIDERS, OAUTHPROVIDERS, and APIKEYPROVIDERS entries flagged with hasFree: true + freeNote) This page lists providers with usable free tiers shipped in OmniRoute v3.8.0. The data is derived fro",
+      "Last consolidated: 2026-05-13 — OmniRoute v3.8.1 Source of truth: src/shared/constants/providers.ts (FREEPROVIDERS, OAUTHPROVIDERS, and APIKEYPROVIDERS entries flagged with hasFree: true + freeNote) This page lists providers with usable free tiers shipped in OmniRoute v3.8.1. The data is derived fro",
     headings: [
       "How free providers are wired",
       "Quick reference (API key providers with hasFree: true)",
@@ -1413,6 +1437,7 @@ export const autoAllSlugs: string[] = [
   "troubleshooting",
   "uninstall",
   "user-guide",
+  "vps-deployment",
   "api-reference",
   "cli-tools",
   "environment",

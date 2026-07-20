@@ -1,5 +1,8 @@
 export const REQUEST_BODY_BYTES_PER_MB = 1024 * 1024;
-export const DEFAULT_REQUEST_BODY_LIMIT_MB = 10;
+// Vision/document requests commonly contain several base64-encoded files.
+// Keep a generous safe default while allowing deployments to tune it with
+// MAX_BODY_SIZE_BYTES (bounded by the 500 MB settings maximum).
+export const DEFAULT_REQUEST_BODY_LIMIT_MB = 200;
 export const MIN_REQUEST_BODY_LIMIT_MB = 1;
 export const MAX_REQUEST_BODY_LIMIT_MB = 500;
 export const DEFAULT_REQUEST_BODY_LIMIT_BYTES =

@@ -10,7 +10,10 @@ import {
   getAllVideoModels,
   getVideoProvider,
 } from "@omniroute/open-sse/config/videoRegistry.ts";
-import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
+import {
+  addVietnameseMessageToErrorPayload,
+  errorResponse,
+} from "@omniroute/open-sse/utils/error.ts";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import * as log from "@/sse/utils/logger";
 import { toJsonErrorPayload } from "@/shared/utils/upstreamError";
@@ -112,7 +115,10 @@ export async function POST(request) {
     });
   }
 
-  const errorPayload = toJsonErrorPayload((result as any).error, "Video generation provider error");
+  const errorPayload = addVietnameseMessageToErrorPayload(
+    (result as any).status,
+    toJsonErrorPayload((result as any).error, "Video generation provider error")
+  );
   return new Response(JSON.stringify(errorPayload), {
     status: (result as any).status,
     headers: { "Content-Type": "application/json" },

@@ -32,6 +32,7 @@ export interface ProviderNode {
 export interface ModelCooldownErrorPayload {
   error: {
     message: string;
+    message_vi: string;
     type: "rate_limit_error";
     code: "model_cooldown";
     model?: string;

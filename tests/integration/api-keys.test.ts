@@ -265,6 +265,41 @@ test("token limit rejects requests once counted usage reaches the limit", async 
   assert.equal(result.rejection?.status, 429);
 });
 
+test("prepaid package key returns 429 after its purchased token balance is exhausted", async () => {
+  await enableManagementAuth();
+  await createManagementKey();
+  const tokenLimit = 100_000_000;
+  const response = await listRoute.POST(
+    await makeManagementSessionRequest("http://localhost/api/keys", {
+      method: "POST",
+      body: {
+        name: "Exhausted prepaid package",
+        billingMode: "prepaid",
+        tokenLimit,
+      },
+    })
+  );
+  const body = (await response.json()) as any;
+
+  apiKeysDb.incrementApiKeyTokenUsage(body.id, tokenLimit);
+
+  const result = await apiKeyPolicy.enforceApiKeyPolicy(
+    new Request("http://localhost/v1/responses", {
+      headers: { authorization: `Bearer ${body.key}` },
+    }),
+    "cx/gpt-5.6-sol"
+  );
+  const rejectionBody = (await result.rejection?.json()) as any;
+
+  assert.equal(response.status, 201);
+  assert.equal(result.rejection?.status, 429);
+  assert.equal(rejectionBody.error.message, "API key token limit exceeded");
+  assert.equal(
+    rejectionBody.error.message_vi,
+    "Khóa API đã sử dụng hết hạn mức token. Vui lòng nâng hạn mức hoặc liên hệ quản trị viên."
+  );
+});
+
 test("POST /api/keys validates missing and oversized names", async () => {
   await enableManagementAuth();
   await createManagementKey();

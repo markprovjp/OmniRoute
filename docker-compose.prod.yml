@@ -58,6 +58,30 @@ services:
       retries: 3
       start_period: 15s
 
+  omniroute-telegram-bot:
+    container_name: omniroute-telegram-bot
+    depends_on:
+      omniroute-prod:
+        condition: service_healthy
+    build:
+      context: .
+      dockerfile: Dockerfile.telegram
+    image: omniroute-telegram-bot:prod
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file:
+      - .env
+      - .env.telegram
+    environment:
+      - NODE_ENV=production
+      - DATA_DIR=/app/data
+      - OMNIROUTE_MIGRATIONS_DIR=/app/migrations
+    volumes:
+      - omniroute-prod-data:/app/data
+    command: ["node", "telegram/telegram-token-bot.mjs"]
+    healthcheck:
+      disable: true
+
   omniroute-watchdog:
     image: docker:27-cli
     container_name: omniroute-watchdog

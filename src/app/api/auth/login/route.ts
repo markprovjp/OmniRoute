@@ -13,6 +13,8 @@ import { loginSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { checkLoginGuard, clearLoginAttempts, recordLoginFailure } from "@/server/auth/loginGuard";
 
+const AUTH_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+
 // SECURITY: No hardcoded fallback — JWT_SECRET must be configured.
 if (!process.env.JWT_SECRET) {
   console.error("[SECURITY] FATAL: JWT_SECRET is not set. Login authentication is disabled.");
@@ -144,6 +146,7 @@ export async function POST(request) {
         secure: useSecureCookie,
         sameSite: "lax",
         path: "/",
+        maxAge: AUTH_SESSION_MAX_AGE_SECONDS,
       });
 
       logAuditEvent({

@@ -78,11 +78,11 @@ export function getApiKeyUsageSummaries(apiKeyIds: string[]): Record<string, Api
         COUNT(*) as totalRequests,
         COALESCE(SUM(CASE WHEN timestamp >= @todayStart THEN 1 ELSE 0 END), 0) as todayRequests,
         COALESCE(SUM(CASE WHEN timestamp >= @hourStart THEN 1 ELSE 0 END), 0) as hourRequests,
-        COALESCE(SUM(tokens_input), 0) as inputTokens,
+        COALESCE(SUM(MAX(0, tokens_input - COALESCE(tokens_cache_read, 0) - COALESCE(tokens_cache_creation, 0))), 0) as inputTokens,
         COALESCE(SUM(tokens_output), 0) as outputTokens,
-        COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens,
-        COALESCE(SUM(CASE WHEN timestamp >= @todayStart THEN tokens_input + tokens_output ELSE 0 END), 0) as todayTokens,
-        COALESCE(SUM(CASE WHEN timestamp >= @hourStart THEN tokens_input + tokens_output ELSE 0 END), 0) as hourTokens,
+        COALESCE(SUM(MAX(0, tokens_input - COALESCE(tokens_cache_read, 0) - COALESCE(tokens_cache_creation, 0)) + tokens_output), 0) as totalTokens,
+        COALESCE(SUM(CASE WHEN timestamp >= @todayStart THEN MAX(0, tokens_input - COALESCE(tokens_cache_read, 0) - COALESCE(tokens_cache_creation, 0)) + tokens_output ELSE 0 END), 0) as todayTokens,
+        COALESCE(SUM(CASE WHEN timestamp >= @hourStart THEN MAX(0, tokens_input - COALESCE(tokens_cache_read, 0) - COALESCE(tokens_cache_creation, 0)) + tokens_output ELSE 0 END), 0) as hourTokens,
         MAX(timestamp) as lastUsed
       FROM usage_history
       WHERE api_key_id IN (${placeholders})
@@ -119,9 +119,9 @@ export function getApiKeyModelUsage(apiKeyId: string, limit = 20): ApiKeyModelUs
       SELECT
         COALESCE(NULLIF(model, ''), 'unknown') as model,
         COUNT(*) as requests,
-        COALESCE(SUM(tokens_input), 0) as inputTokens,
+        COALESCE(SUM(MAX(0, tokens_input - COALESCE(tokens_cache_read, 0) - COALESCE(tokens_cache_creation, 0))), 0) as inputTokens,
         COALESCE(SUM(tokens_output), 0) as outputTokens,
-        COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens,
+        COALESCE(SUM(MAX(0, tokens_input - COALESCE(tokens_cache_read, 0) - COALESCE(tokens_cache_creation, 0)) + tokens_output), 0) as totalTokens,
         MAX(timestamp) as lastUsed
       FROM usage_history
       WHERE api_key_id = @apiKeyId

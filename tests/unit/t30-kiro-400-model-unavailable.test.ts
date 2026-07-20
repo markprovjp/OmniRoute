@@ -17,6 +17,14 @@ test("T30: generic 400 without model-unavailable signal is not treated as unavai
   assert.equal(unavailable, false);
 });
 
+test("T30: Codex account model entitlement 400 is treated as model-unavailable", () => {
+  const unavailable = isModelUnavailableError(
+    400,
+    "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."
+  );
+  assert.equal(unavailable, true);
+});
+
 test("T30: 404 still maps to model-unavailable", () => {
   const unavailable = isModelUnavailableError(404, "not found");
   assert.equal(unavailable, true);

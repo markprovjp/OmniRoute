@@ -20,7 +20,6 @@ interface TelegramMessageResult {
 interface TelegramAlertCandidate {
   dedupeKey: string;
   line: string;
-  terminal: boolean;
 }
 
 interface ClaimedTelegramAlert extends TelegramAlertCandidate {
@@ -115,7 +114,6 @@ function tokenAlertCandidates(usage: ApiKeyCustomerUsage): TelegramAlertCandidat
           threshold === 100
             ? `• ${label} đã đạt <b>100%</b> — hạn mức đã hết.`
             : `• ${label} đã đạt <b>${threshold}%</b>.`,
-        terminal: threshold === 100,
       });
     }
   }
@@ -148,7 +146,6 @@ function expiryAlertCandidate(
       configuredLimit: expiresAt,
     }),
     line,
-    terminal: threshold === "expired",
   };
 }
 
@@ -166,7 +163,7 @@ function formatAlertMessage(usage: ApiKeyCustomerUsage, alerts: ClaimedTelegramA
     "",
     ...alerts.map((alert) => alert.line),
     "",
-    "Dùng /usage để xem chi tiết hoặc /mute để tắt cảnh báo thường trong 24 giờ.",
+    "Gửi lại API key cho bot để xem Usage hoặc đổi trạng thái cảnh báo.",
   ].join("\n");
 }
 
@@ -279,6 +276,11 @@ async function processSubscription(
   now: Date,
   result: TelegramAlertSweepResult
 ): Promise<void> {
+  if (isMuted(subscription, now)) {
+    result.skippedMuted += 1;
+    return;
+  }
+
   let usage: ApiKeyCustomerUsage | null;
   try {
     usage = await deps.getUsage(subscription.apiKeyId, now);
@@ -292,17 +294,8 @@ async function processSubscription(
     return;
   }
 
-  let candidates = alertCandidates(usage, now);
+  const candidates = alertCandidates(usage, now);
   if (candidates.length === 0) return;
-  if (isMuted(subscription, now)) {
-    const terminal = candidates.filter((candidate) => candidate.terminal);
-    if (terminal.length === 0) {
-      result.skippedMuted += 1;
-      return;
-    }
-    if (terminal.length !== candidates.length) result.skippedMuted += 1;
-    candidates = terminal;
-  }
 
   const claimed = candidates.flatMap((candidate): ClaimedTelegramAlert[] => {
     const claim = deps.claimDelivery(subscription.id, candidate.dedupeKey, now);

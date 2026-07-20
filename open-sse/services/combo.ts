@@ -13,7 +13,7 @@ import {
   isProviderFailureCode,
   isProviderExhaustedReason,
 } from "./accountFallback.ts";
-import { errorResponse, unavailableResponse } from "../utils/error.ts";
+import { buildErrorBody, errorResponse, unavailableResponse } from "../utils/error.ts";
 import { recordComboIntent, recordComboRequest, getComboMetrics } from "./comboMetrics.ts";
 import { resolveComboConfig, getDefaultComboConfig } from "./comboConfig.ts";
 import { maybeGenerateHandoff, resolveContextRelayConfig } from "./contextHandoff.ts";
@@ -2352,16 +2352,16 @@ export async function handleComboChat({
 
     // All set retries exhausted — return the final error
     if (!lastStatus) {
-      return new Response(
-        JSON.stringify({
-          error: {
-            message: "Service temporarily unavailable: all upstream accounts are inactive",
-            type: "service_unavailable",
-            code: "ALL_ACCOUNTS_INACTIVE",
-          },
-        }),
-        { status: 503, headers: { "Content-Type": "application/json" } }
+      const errorBody = buildErrorBody(
+        503,
+        "Service temporarily unavailable: all upstream accounts are inactive"
       );
+      errorBody.error.type = "service_unavailable";
+      errorBody.error.code = "ALL_ACCOUNTS_INACTIVE";
+      return new Response(JSON.stringify(errorBody), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     const status = lastStatus;
@@ -2374,7 +2374,7 @@ export async function handleComboChat({
     }
 
     log.warn("COMBO", `All models failed | ${msg}`);
-    return new Response(JSON.stringify({ error: { message: msg } }), {
+    return new Response(JSON.stringify(buildErrorBody(status, msg)), {
       status,
       headers: { "Content-Type": "application/json" },
     });
@@ -2752,16 +2752,16 @@ async function handleRoundRobinCombo({
   }
 
   if (!lastStatus) {
-    return new Response(
-      JSON.stringify({
-        error: {
-          message: "Service temporarily unavailable: all upstream accounts are inactive",
-          type: "service_unavailable",
-          code: "ALL_ACCOUNTS_INACTIVE",
-        },
-      }),
-      { status: 503, headers: { "Content-Type": "application/json" } }
+    const errorBody = buildErrorBody(
+      503,
+      "Service temporarily unavailable: all upstream accounts are inactive"
     );
+    errorBody.error.type = "service_unavailable";
+    errorBody.error.code = "ALL_ACCOUNTS_INACTIVE";
+    return new Response(JSON.stringify(errorBody), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   const status = lastStatus;
@@ -2774,7 +2774,7 @@ async function handleRoundRobinCombo({
   }
 
   log.warn("COMBO-RR", `All models failed | ${msg}`);
-  return new Response(JSON.stringify({ error: { message: msg } }), {
+  return new Response(JSON.stringify(buildErrorBody(status, msg)), {
     status,
     headers: { "Content-Type": "application/json" },
   });

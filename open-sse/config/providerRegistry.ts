@@ -182,6 +182,15 @@ const GPT_5_5_CODEX_CAPABILITIES = {
   contextLength: GPT_5_5_CONTEXT_LENGTH,
 } as const;
 
+const GPT_5_6_CODEX_CAPABILITIES = {
+  targetFormat: "openai-responses",
+  toolCalling: true,
+  supportsReasoning: true,
+  supportsVision: true,
+  supportsXHighEffort: true,
+  contextLength: 400000,
+} as const;
+
 const CHAT_OPENAI_COMPAT_MODELS: Record<string, RegistryModel[]> = {
   deepinfra: buildModels([
     "anthropic/claude-4-opus",
@@ -741,6 +750,12 @@ export const REGISTRY: Record<string, RegistryEntry> = {
       tokenUrl: "https://auth.openai.com/oauth/token",
     },
     models: [
+      {
+        id: "gpt-5.6-sol",
+        name: "GPT 5.6 Sol",
+        ...GPT_5_6_CODEX_CAPABILITIES,
+        maxOutputTokens: 8192,
+      },
       // gpt-5.5 codex OAuth backend caps context at 400K (not the public-API
       // 1.05M). Public refs : openai/codex#19208, #19319, #19464 ;
       // opencode#24171. max_output_tokens is stripped server-side

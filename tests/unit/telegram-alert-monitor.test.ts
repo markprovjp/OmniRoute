@@ -239,7 +239,7 @@ test("re-arms daily alerts after reset and lifetime alerts after a limit change"
   assert.equal(harness.deliveries.size, 4);
 });
 
-test("delivers seven-day, one-day, and expired stages and does not mute expiry", async () => {
+test("delivers expiry stages only while alerts are enabled", async () => {
   const expiry = "2026-07-26T00:00:00.000Z";
   const firstNow = new Date("2026-07-19T00:00:00.000Z");
   const harness = createHarness(usage({ expiresAt: expiry, now: firstNow }));
@@ -248,18 +248,24 @@ test("delivers seven-day, one-day, and expired stages and does not mute expiry",
   const oneDayNow = new Date("2026-07-25T00:00:00.000Z");
   harness.setUsage(usage({ expiresAt: expiry, now: oneDayNow }));
   await runTelegramAlertSweep(harness.deps, oneDayNow);
-  harness.deps.listSubscriptions = () => [subscription({ mutedUntil: "2026-07-28T00:00:00.000Z" })];
-  const expiredNow = new Date("2026-07-26T00:00:00.001Z");
-  harness.setUsage(usage({ state: "expired", expiresAt: expiry, now: expiredNow }));
-  await runTelegramAlertSweep(harness.deps, expiredNow);
 
-  assert.equal(harness.messages.length, 3);
+  const expiredNow = new Date("2026-07-26T00:00:00.001Z");
+  harness.deps.listSubscriptions = () => [subscription({ mutedUntil: "9999-12-31T23:59:59.999Z" })];
+  harness.setUsage(usage({ state: "expired", expiresAt: expiry, now: expiredNow }));
+  const muted = await runTelegramAlertSweep(harness.deps, expiredNow);
+
+  assert.equal(muted.skippedMuted, 1);
+  assert.equal(harness.messages.length, 2);
   assert.match(harness.messages[0]?.text ?? "", /7 ngày/);
   assert.match(harness.messages[1]?.text ?? "", /1 ngày/);
+
+  harness.deps.listSubscriptions = () => [subscription({ mutedUntil: null })];
+  await runTelegramAlertSweep(harness.deps, expiredNow);
+  assert.equal(harness.messages.length, 3);
   assert.match(harness.messages[2]?.text ?? "", /đã hết hạn/i);
 });
 
-test("defers ordinary alerts while muted and sends them after mute expires", async () => {
+test("defers every alert while muted and sends it after alerts are enabled", async () => {
   const mutedNow = new Date("2026-07-19T00:00:00.000Z");
   const harness = createHarness(usage({ dailyLimit: 100, dailyUsed: 95, now: mutedNow }));
   harness.deps.listSubscriptions = () => [subscription({ mutedUntil: "2026-07-20T00:00:00.000Z" })];

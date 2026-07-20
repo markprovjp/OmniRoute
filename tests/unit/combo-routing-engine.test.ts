@@ -1458,7 +1458,16 @@ test("handleComboChat returns a 503 when every model is unavailable before execu
 
   const payload = (await result.json()) as any;
   assert.equal(result.status, 503);
+  assert.equal(payload.error.type, "service_unavailable");
+  assert.equal(
+    payload.error.message,
+    "Service temporarily unavailable: all upstream accounts are inactive"
+  );
   assert.equal(payload.error.code, "ALL_ACCOUNTS_INACTIVE");
+  assert.equal(
+    payload.error.message_vi,
+    "Dịch vụ AI tạm thời không khả dụng. Vui lòng thử lại sau."
+  );
 });
 
 test("handleComboChat treats provider circuit breaker responses as ordinary target failures", async () => {
@@ -1867,7 +1876,16 @@ test("handleComboChat round-robin resolves nested combos and returns inactive wh
 
   const payload = (await result.json()) as any;
   assert.equal(result.status, 503);
+  assert.equal(payload.error.type, "service_unavailable");
+  assert.equal(
+    payload.error.message,
+    "Service temporarily unavailable: all upstream accounts are inactive"
+  );
   assert.equal(payload.error.code, "ALL_ACCOUNTS_INACTIVE");
+  assert.equal(
+    payload.error.message_vi,
+    "Dịch vụ AI tạm thời không khả dụng. Vui lòng thử lại sau."
+  );
 });
 
 test("handleComboChat round-robin treats provider circuit breaker responses as ordinary target failures", async () => {

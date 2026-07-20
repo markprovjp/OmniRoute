@@ -31,6 +31,7 @@ import {
 } from "@omniroute/open-sse/services/accountFallback.ts";
 import { isLocalProvider } from "@omniroute/open-sse/config/providerRegistry.ts";
 import { COOLDOWN_MS } from "@omniroute/open-sse/config/constants.ts";
+import { isModelUnavailableError } from "@omniroute/open-sse/services/modelFamilyFallback.ts";
 import {
   preflightQuota,
   isQuotaPreflightEnabled,
@@ -1583,6 +1584,30 @@ export async function markAccountUnavailable(
 
     const effectiveProviderProfile =
       providerProfile || (provider ? await getRuntimeProviderProfile(provider) : null);
+
+    if (provider === "codex" && model && isModelUnavailableError(status, String(errorText || ""))) {
+      const lockout = recordModelLockoutFailure(
+        provider,
+        connectionId,
+        model,
+        "model_unavailable",
+        status,
+        effectiveProviderProfile?.baseCooldownMs ?? COOLDOWN_MS.notFoundLocal,
+        effectiveProviderProfile
+      );
+      await updateProviderConnection(connectionId, {
+        lastErrorType: "model_unavailable",
+        lastError: `Model ${model} unavailable for this account`,
+        lastErrorAt: new Date().toISOString(),
+        errorCode: status,
+      });
+      log.info(
+        "AUTH",
+        `Model-only lockout for ${provider}:${model} — ${status} model_unavailable ${Math.ceil(lockout.cooldownMs / 1000)}s (connection stays active)`
+      );
+      return { shouldFallback: true, cooldownMs: lockout.cooldownMs };
+    }
+
     const fallbackResult = checkFallbackError(
       status,
       errorText,

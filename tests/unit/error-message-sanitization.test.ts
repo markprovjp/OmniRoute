@@ -240,6 +240,72 @@ test("buildErrorBody never exposes stack traces in its message", async () => {
   assert.ok(!body.error.message.includes("at /opt"));
 });
 
+test("errorResponse adds a Vietnamese customer message for upstream 502 failures", async () => {
+  const { errorResponse } = await import("../../open-sse/utils/error.ts");
+  const response = errorResponse(502, "Provider returned an invalid response");
+  const body = (await response.json()) as any;
+
+  assert.equal(body.error.message, "Provider returned an invalid response");
+  assert.equal(
+    body.error.message_vi,
+    "Nhà cung cấp AI đang phản hồi lỗi. Vui lòng thử lại hoặc chọn model khác."
+  );
+});
+
+test("writeStreamError adds the Vietnamese token-limit message to SSE errors", async () => {
+  const { writeStreamError } = await import("../../open-sse/utils/error.ts");
+  const chunks: Uint8Array[] = [];
+  const writer = new WritableStream<Uint8Array>({
+    write(chunk) {
+      chunks.push(chunk);
+    },
+  }).getWriter();
+
+  await writeStreamError(writer, 429, "API key token limit exceeded");
+  await writer.close();
+
+  const payload = new TextDecoder()
+    .decode(chunks[0])
+    .trim()
+    .replace(/^data: /, "");
+  const body = JSON.parse(payload);
+  assert.equal(
+    body.error.message_vi,
+    "Khóa API đã sử dụng hết hạn mức token. Vui lòng nâng hạn mức hoặc liên hệ quản trị viên."
+  );
+});
+
+test("unavailableResponse adds the Vietnamese rate-limit message", async () => {
+  const { unavailableResponse } = await import("../../open-sse/utils/error.ts");
+  const response = unavailableResponse(429, "All accounts are rate limited", 30);
+  const body = (await response.json()) as any;
+
+  assert.equal(response.status, 429);
+  assert.equal(
+    body.error.message_vi,
+    "Hệ thống đang nhận quá nhiều yêu cầu. Vui lòng thử lại sau ít phút."
+  );
+});
+
+test("localized error payloads sanitize upstream messages and nested details", async () => {
+  const { addVietnameseMessageToErrorPayload } = await import("../../open-sse/utils/error.ts");
+  const body = addVietnameseMessageToErrorPayload(502, {
+    error: {
+      message: "Provider failed\n    at C:\\app\\src\\provider.ts:12",
+      stack: "Error at C:\\app\\src\\provider.ts:12",
+      apiKey: "should-not-leak",
+      details: { secret: "should-not-leak", note: "retry upstream" },
+    },
+  }) as any;
+
+  assert.equal(body.error.message, "Provider failed");
+  assert.ok(!JSON.stringify(body).includes("should-not-leak"));
+  assert.equal(
+    body.error.message_vi,
+    "Nhà cung cấp AI đang phản hồi lỗi. Vui lòng thử lại hoặc chọn model khác."
+  );
+});
+
 // ── sanitizeUpstreamDetails ──────────────────────────────────────────────────
 
 test("sanitizeUpstreamDetails — basic pass-through for safe fields", async () => {

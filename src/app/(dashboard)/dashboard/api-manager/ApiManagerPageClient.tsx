@@ -190,20 +190,6 @@ interface Model {
   owned_by: string;
 }
 
-interface QrouterUpstream {
-  configured: boolean;
-  providerId: string | null;
-  connectionId: string | null;
-  name: string;
-  baseUrl: string;
-  prefix: string;
-  modelId: string;
-  model: string;
-  apiType: string;
-  keyCount: number;
-  isActive: boolean;
-}
-
 /** Tuple type for models grouped by provider: [providerName, models[]] */
 type ProviderGroup = [provider: string, models: Model[]];
 
@@ -222,11 +208,13 @@ function ActionMenu({
   onToggle,
   onClose,
   items,
+  ariaLabel = "Open key actions",
 }: {
   isOpen: boolean;
   onToggle: () => void;
   onClose: () => void;
   items: ActionMenuItem[];
+  ariaLabel?: string;
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -251,7 +239,7 @@ function ActionMenu({
         className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-surface text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        aria-label="Open key actions"
+        aria-label={ariaLabel}
       >
         <span className="material-symbols-outlined text-[20px]">more_horiz</span>
       </button>
@@ -316,10 +304,6 @@ export default function ApiManagerPageClient() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [usageStats, setUsageStats] = useState<Record<string, KeyUsageStats>>({});
   const [sessionCounts, setSessionCounts] = useState<Record<string, number>>({});
-  const [qrouterUpstream, setQrouterUpstream] = useState<QrouterUpstream | null>(null);
-  const [upstreamApiKeys, setUpstreamApiKeys] = useState("");
-  const [upstreamError, setUpstreamError] = useState<string | null>(null);
-  const [upstreamSaving, setUpstreamSaving] = useState(false);
   const [keySearch, setKeySearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<KeyStatusFilter>("all");
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
@@ -334,36 +318,6 @@ export default function ApiManagerPageClient() {
     );
     return Math.max(1, maxRequests);
   }, [usageStats]);
-
-  const fetchQrouterUpstream = useCallback(async () => {
-    try {
-      const res = await fetch("/api/qrouter-upstream");
-      if (!res.ok) return;
-      const data = await res.json();
-      setQrouterUpstream(data.upstream || null);
-    } catch (error) {
-      console.log("Error fetching QRouter upstream:", error);
-    }
-  }, []);
-
-  const handleToggleQrouterUpstream = async (checked: boolean) => {
-    try {
-      const res = await fetch("/api/qrouter-upstream", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ isActive: !checked }),
-      });
-      if (res.ok) {
-        await fetchQrouterUpstream();
-      } else {
-        console.error("Failed to toggle QRouter upstream status");
-      }
-    } catch (error) {
-      console.error("Error toggling QRouter upstream status:", error);
-    }
-  };
 
   const fetchModels = useCallback(async () => {
     try {
@@ -427,8 +381,7 @@ export default function ApiManagerPageClient() {
     fetchData();
     fetchModels();
     fetchConnections();
-    fetchQrouterUpstream();
-  }, [fetchConnections, fetchData, fetchModels, fetchQrouterUpstream]);
+  }, [fetchConnections, fetchData, fetchModels]);
 
   const fetchSessionCounts = async (apiKeys: ApiKey[]) => {
     if (apiKeys.length === 0) {
@@ -457,40 +410,6 @@ export default function ApiManagerPageClient() {
 
   const clearPageError = useCallback(() => setPageError(null), []);
   const clearPageNotice = useCallback(() => setPageNotice(null), []);
-
-  const handleSaveQrouterUpstream = async () => {
-    const apiKeys = upstreamApiKeys
-      .split(/[\r\n,]+/)
-      .map((key) => key.trim())
-      .filter(Boolean);
-    if (apiKeys.length === 0) {
-      setUpstreamError("Nhap it nhat mot upstream key.");
-      return;
-    }
-
-    setUpstreamSaving(true);
-    setUpstreamError(null);
-    try {
-      const res = await fetch("/api/qrouter-upstream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKeys }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setUpstreamError(data.error || "Khong luu duoc upstream key.");
-        return;
-      }
-      setQrouterUpstream(data.upstream || null);
-      setUpstreamApiKeys("");
-      await Promise.all([fetchModels(), fetchConnections()]);
-    } catch (error) {
-      console.error("Error saving QRouter upstream:", error);
-      setUpstreamError("Khong luu duoc upstream key.");
-    } finally {
-      setUpstreamSaving(false);
-    }
-  };
 
   const handleCreateKey = async () => {
     // Validate raw input first, then sanitize
@@ -648,18 +567,18 @@ export default function ApiManagerPageClient() {
       const res = await fetch(`/api/keys/${encodeURIComponent(keyId)}/reveal`);
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setPageError(data?.error || "Cannot reveal this key for copying.");
+        setPageError(data?.error || t("cannotRevealKey"));
         return;
       }
 
       const data = await res.json();
       if (typeof data?.key === "string") {
         const copiedOk = await copy(data.key, `existing_key_${keyId}`);
-        if (!copiedOk) setPageError("Clipboard copy failed. Try again from a secure browser tab.");
+        if (!copiedOk) setPageError(t("clipboardCopyFailed"));
       }
     } catch (error) {
       console.log("Error copying existing key:", error);
-      setPageError("Cannot copy this key right now.");
+      setPageError(t("cannotCopyKey"));
     }
   };
 
@@ -667,7 +586,7 @@ export default function ApiManagerPageClient() {
     const res = await fetch(`/api/keys/${encodeURIComponent(keyId)}/reveal`);
     const data = await res.json().catch(() => null);
     if (!res.ok || typeof data?.key !== "string") {
-      setPageError(data?.error || "Cannot reveal this key.");
+      setPageError(data?.error || t("cannotReveal"));
       return null;
     }
     return data.key;
@@ -690,15 +609,17 @@ export default function ApiManagerPageClient() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
-        setPageError(data?.error?.message || data?.error || `Key test failed with ${res.status}.`);
+        setPageError(
+          data?.error?.message || data?.error || t("keyTestFailed", { status: res.status })
+        );
         return;
       }
 
       const modelCount = Array.isArray(data?.data) ? data.data.length : 0;
-      setPageNotice(`Key "${key.name}" works. /v1/models returned ${modelCount} models.`);
+      setPageNotice(t("keyWorks", { name: key.name, count: modelCount }));
     } catch (error) {
       console.log("Error testing existing key:", error);
-      setPageError("Cannot test this key right now.");
+      setPageError(t("cannotTestKey"));
     } finally {
       setTestingKeyId(null);
     }
@@ -942,7 +863,7 @@ export default function ApiManagerPageClient() {
               </div>
               <div>
                 <p className="text-2xl font-bold">{managerSummary.activeKeys.toLocaleString()}</p>
-                <p className="text-xs text-text-muted">Active shares</p>
+                <p className="text-xs text-text-muted">{t("activeShares")}</p>
               </div>
             </div>
           </Card>
@@ -955,7 +876,7 @@ export default function ApiManagerPageClient() {
               </div>
               <div>
                 <p className="text-2xl font-bold">{managerSummary.limitedKeys.toLocaleString()}</p>
-                <p className="text-xs text-text-muted">Quota plans</p>
+                <p className="text-xs text-text-muted">{t("quotaPlans")}</p>
               </div>
             </div>
           </Card>
@@ -968,7 +889,7 @@ export default function ApiManagerPageClient() {
                 <p className="text-2xl font-bold">
                   {managerSummary.todayRequests.toLocaleString()}
                 </p>
-                <p className="text-xs text-text-muted">Requests today</p>
+                <p className="text-xs text-text-muted">{t("requestsToday")}</p>
               </div>
             </div>
           </Card>
@@ -979,7 +900,7 @@ export default function ApiManagerPageClient() {
               </div>
               <div>
                 <p className="text-2xl font-bold">{managerSummary.totalTokens.toLocaleString()}</p>
-                <p className="text-xs text-text-muted">Total tokens used</p>
+                <p className="text-xs text-text-muted">{t("totalTokensUsed")}</p>
               </div>
             </div>
           </Card>
@@ -994,7 +915,7 @@ export default function ApiManagerPageClient() {
                 <p className="text-2xl font-bold">
                   {managerSummary.reservedTokens.toLocaleString()}
                 </p>
-                <p className="text-xs text-text-muted">Reserved now</p>
+                <p className="text-xs text-text-muted">{t("reservedNow")}</p>
               </div>
             </div>
           </Card>
@@ -1019,21 +940,6 @@ export default function ApiManagerPageClient() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3 sm:justify-end">
-            {qrouterUpstream && (
-              <div className="flex items-center gap-2 rounded-lg border border-border bg-surface/40 px-3 py-2">
-                <Toggle
-                  checked={qrouterUpstream.isActive === false}
-                  onChange={handleToggleQrouterUpstream}
-                  label="System Routing"
-                  size="sm"
-                />
-                <span className="text-[11px] text-text-muted">
-                  {qrouterUpstream.isActive === false
-                    ? "system keys"
-                    : `${qrouterUpstream.keyCount} external key${qrouterUpstream.keyCount === 1 ? "" : "s"}`}
-                </span>
-              </div>
-            )}
             <Button
               icon="add"
               onClick={() => {
@@ -1055,19 +961,19 @@ export default function ApiManagerPageClient() {
             <Input
               value={keySearch}
               onChange={(event) => setKeySearch(event.target.value)}
-              placeholder="Search name, customer, note or key"
+              placeholder={t("searchKeysPlaceholder")}
               icon="search"
             />
           </div>
           <div className="flex flex-wrap gap-1.5">
             {(
               [
-                ["all", "All"],
-                ["active", "Active"],
-                ["limited", "Limited"],
-                ["disabled", "Paused"],
-                ["banned", "Banned"],
-                ["expired", "Expired"],
+                ["all", t("filterAll")],
+                ["active", t("filterActive")],
+                ["limited", t("filterLimited")],
+                ["disabled", t("filterPaused")],
+                ["banned", t("filterBanned")],
+                ["expired", t("filterExpired")],
               ] as Array<[KeyStatusFilter, string]>
             ).map(([value, label]) => (
               <button
@@ -1177,7 +1083,7 @@ export default function ApiManagerPageClient() {
                         className="block text-[11px] text-text-muted truncate"
                         title={key.internalNote || key.customerName || ""}
                       >
-                        {key.customerName || "No customer name"}
+                        {key.customerName || t("noCustomerName")}
                       </span>
                       <span
                         className={`mt-1 inline-flex rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
@@ -1186,7 +1092,7 @@ export default function ApiManagerPageClient() {
                             : "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300"
                         }`}
                       >
-                        {key.commercialKey ? "Shared key" : "System key"}
+                        {key.commercialKey ? t("sharedKey") : t("systemKey")}
                       </span>
                     </div>
                   </div>
@@ -1296,7 +1202,7 @@ export default function ApiManagerPageClient() {
                   </div>
                   <div className="flex flex-col justify-center gap-0.5 rounded-md border border-border/70 bg-surface/30 p-2 lg:col-span-3 lg:border-0 lg:bg-transparent lg:p-0">
                     <div className="flex items-center justify-between gap-2 text-[10px] font-semibold text-text-main tabular-nums">
-                      <span>Total quota used</span>
+                      <span>{t("totalQuotaUsed")}</span>
                       <span>{quotaTotalUsed.toLocaleString()} tokens</span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
@@ -1408,8 +1314,8 @@ export default function ApiManagerPageClient() {
                         </div>
                         <span className="text-[9px] text-text-muted/60 italic leading-none">
                           {stats?.estimatedFromWorkspace
-                            ? "Unlimited quota, showing workspace historical activity"
-                            : "Unlimited quota, showing measured request activity"}
+                            ? t("unlimitedQuotaHistorical")
+                            : t("unlimitedQuotaMeasured")}
                         </span>
                       </div>
                     )}
@@ -1435,19 +1341,19 @@ export default function ApiManagerPageClient() {
                         },
                         {
                           icon: testingKeyId === key.id ? "progress_activity" : "network_check",
-                          label: testingKeyId === key.id ? "Testing key..." : "Test key",
+                          label: testingKeyId === key.id ? t("testingKey") : t("testKey"),
                           disabled: testingKeyId === key.id,
                           onClick: () => handleTestExistingKey(key),
                         },
                         {
                           icon: keyIsActive ? "pause_circle" : "play_circle",
-                          label: keyIsActive ? "Disable key" : "Enable key",
+                          label: keyIsActive ? t("disableKey") : t("enableKey"),
                           tone: keyIsActive ? "warning" : "success",
                           onClick: () => handleToggleKey(key),
                         },
                         {
                           icon: "add_circle",
-                          label: "Add tokens / quota",
+                          label: t("addTokensQuota"),
                           onClick: () => handleOpenPermissions(key),
                         },
                         {
@@ -1468,6 +1374,7 @@ export default function ApiManagerPageClient() {
                           onClick: () => setPendingKeyAction({ type: "delete", key }),
                         },
                       ]}
+                      ariaLabel={t("keyActions")}
                     />
                   </div>
                 </div>
@@ -1515,30 +1422,32 @@ export default function ApiManagerPageClient() {
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="text-sm font-medium text-text-main mb-1.5 block">
-                Customer name
+                {t("customerName")}
               </label>
               <Input
                 value={newCustomerName}
                 onChange={(e) => setNewCustomerName(e.target.value)}
-                placeholder="Customer or company"
+                placeholder={t("customerOrCompany")}
                 maxLength={MAX_KEY_NAME_LENGTH}
               />
             </div>
             <div className="sm:col-span-2">
-              <label className="text-sm font-medium text-text-main mb-1.5 block">Key type</label>
-              <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Key type">
+              <label className="text-sm font-medium text-text-main mb-1.5 block">
+                {t("keyType")}
+              </label>
+              <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label={t("keyType")}>
                 {[
                   {
                     value: "prepaid" as const,
                     icon: "payments",
-                    label: "Prepaid token key",
-                    description: "Stops when the purchased token balance is exhausted.",
+                    label: t("prepaidTokenKey"),
+                    description: t("prepaidTokenKeyDesc"),
                   },
                   {
                     value: "system" as const,
                     icon: "admin_panel_settings",
-                    label: "System key",
-                    description: "Internal key with no lifetime token cap.",
+                    label: t("systemKey"),
+                    description: t("systemKeyDesc"),
                   },
                 ].map((option) => {
                   const selected = newBillingMode === option.value;
@@ -1575,7 +1484,7 @@ export default function ApiManagerPageClient() {
             {newBillingMode === "prepaid" && (
               <div className="sm:col-span-2">
                 <label className="text-sm font-medium text-text-main mb-1.5 block">
-                  Token package
+                  {t("tokenPackage")}
                 </label>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
                   {PREPAID_TOKEN_PACKAGES.map((amount) => {
@@ -1596,30 +1505,29 @@ export default function ApiManagerPageClient() {
                     );
                   })}
                 </div>
-                <p className="mt-2 text-xs text-text-muted">
-                  Input and output tokens are accumulated together. Requests stop at the package
-                  limit.
-                </p>
+                <p className="mt-2 text-xs text-text-muted">{t("tokenUsageCombinedDesc")}</p>
               </div>
             )}
             <div>
               <label className="text-sm font-medium text-text-main mb-1.5 block">
-                Requests/day
+                {t("requestsPerDay")}
               </label>
               <Input
                 value={newRequestLimitDaily}
                 onChange={(e) => setNewRequestLimitDaily(e.target.value.replace(/[^0-9]/g, ""))}
-                placeholder="Unlimited"
+                placeholder={t("unlimited")}
                 inputMode="numeric"
               />
             </div>
           </div>
           <div>
-            <label className="text-sm font-medium text-text-main mb-1.5 block">Internal note</label>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">
+              {t("internalNote")}
+            </label>
             <textarea
               value={newInternalNote}
               onChange={(e) => setNewInternalNote(e.target.value)}
-              placeholder="Only visible to operators"
+              placeholder={t("operatorOnly")}
               rows={2}
               className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background text-text-main"
             />
@@ -1627,8 +1535,8 @@ export default function ApiManagerPageClient() {
           <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface/40 p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <label className="text-sm font-medium text-text-main">Expiry</label>
-                <p className="text-xs text-text-muted">Optional. Blank keys do not expire.</p>
+                <label className="text-sm font-medium text-text-main">{t("expiry")}</label>
+                <p className="text-xs text-text-muted">{t("optionalBlankNoExpire")}</p>
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {[7, 30, 90].map((days) => (
@@ -1646,7 +1554,7 @@ export default function ApiManagerPageClient() {
                   onClick={() => setNewExpiresAt("")}
                   className="rounded-md border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-red-500/40 hover:text-red-500"
                 >
-                  Clear
+                  {t("clear")}
                 </button>
               </div>
             </div>
@@ -2164,9 +2072,7 @@ const PermissionsModal = memo(function PermissionsModal({
         <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface/40 p-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-text-main">{t("maxActiveSessions")}</p>
-            <p className="text-xs text-text-muted">
-              0 = unlimited. Return 429 when this key exceeds concurrent sticky sessions.
-            </p>
+            <p className="text-xs text-text-muted">{t("maxSessionsDescription")}</p>
           </div>
           <div className="w-full sm:w-32 sm:shrink-0">
             <Input
@@ -2197,7 +2103,7 @@ const PermissionsModal = memo(function PermissionsModal({
               className="inline-flex w-fit items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/20 sm:shrink-0"
             >
               <span className="material-symbols-outlined text-[14px]">add</span>
-              Add Limit
+              {t("addLimit")}
             </button>
           </div>
           {rateLimits.length > 0 && (
@@ -2238,7 +2144,7 @@ const PermissionsModal = memo(function PermissionsModal({
                     }}
                     placeholder={t("apiManagerRateLimitSecondsPlaceholder")}
                   />
-                  <span className="text-sm text-text-muted shrink-0">sec</span>
+                  <span className="text-sm text-text-muted shrink-0">{t("seconds")}</span>
                   <button
                     type="button"
                     onClick={() => setRateLimits((prev) => prev.filter((_, i) => i !== index))}
@@ -2356,9 +2262,7 @@ const PermissionsModal = memo(function PermissionsModal({
         <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface/40 p-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-text-main">{t("noLogPayloadPrivacy")}</p>
-            <p className="text-xs text-text-muted">
-              Disable request/response payload persistence for this API key.
-            </p>
+            <p className="text-xs text-text-muted">{t("disablePayloadPersistence")}</p>
           </div>
           <button
             type="button"
@@ -2406,9 +2310,7 @@ const PermissionsModal = memo(function PermissionsModal({
         <div className="flex flex-col gap-3 rounded-lg border border-red-500/20 bg-red-500/5 p-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1">
             <p className="text-sm font-bold text-red-700 dark:text-red-400">{t("bannedStatus")}</p>
-            <p className="text-xs text-red-600 dark:text-red-300">
-              Immediately revoke all access. Used for suspected abuse or compromised keys.
-            </p>
+            <p className="text-xs text-red-600 dark:text-red-300">{t("bannedDescription")}</p>
           </div>
           <button
             role="switch"
@@ -2423,32 +2325,34 @@ const PermissionsModal = memo(function PermissionsModal({
             <span className="material-symbols-outlined text-[14px]">
               {keyIsBanned ? "block" : "check_circle"}
             </span>
-            {keyIsBanned ? "Banned" : "Active"}
+            {keyIsBanned ? t("banned") : t("active")}
           </button>
         </div>
         {/* Customer details */}
         <div className="grid gap-3 p-3 rounded-lg border border-border bg-surface/40 sm:grid-cols-2">
           <div>
-            <label className="text-sm font-medium text-text-main mb-1.5 block">Customer name</label>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">
+              {t("customerName")}
+            </label>
             <Input
               value={customerName}
               onChange={(e) => setCustomerName(e.target.value)}
-              placeholder="Customer or company"
+              placeholder={t("customerOrCompany")}
               maxLength={MAX_KEY_NAME_LENGTH}
             />
           </div>
           <div>
             <label className="text-sm font-medium text-text-main mb-1.5 block">
-              Lifetime tokens
+              {t("lifetimeTokens")}
             </label>
             <Input
               value={tokenLimit}
               onChange={(e) => setTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
-              placeholder="Unlimited"
+              placeholder={t("unlimited")}
               inputMode="numeric"
             />
             <p className="text-xs text-text-muted mt-1">
-              Used: {totalTokenUsed.toLocaleString()} tokens
+              {t("usedTokens", { count: totalTokenUsed.toLocaleString() })}
             </p>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
               {PREPAID_TOKEN_PACKAGES.map((amount) => (
@@ -2470,15 +2374,17 @@ const PermissionsModal = memo(function PermissionsModal({
             </div>
           </div>
           <div>
-            <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/day</label>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">
+              {t("tokensPerDay")}
+            </label>
             <Input
               value={dailyTokenLimit}
               onChange={(e) => setDailyTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
-              placeholder="Unlimited"
+              placeholder={t("unlimited")}
               inputMode="numeric"
             />
             <p className="text-xs text-text-muted mt-1">
-              Used today: {dayTokenUsed.toLocaleString()} tokens.
+              {t("usedTodayTokens", { count: dayTokenUsed.toLocaleString() })}
             </p>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
               {[50_000_000, 100_000_000].map((amount) => (
@@ -2500,33 +2406,39 @@ const PermissionsModal = memo(function PermissionsModal({
             </div>
           </div>
           <div>
-            <label className="text-sm font-medium text-text-main mb-1.5 block">Tokens/hour</label>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">
+              {t("tokensPerHour")}
+            </label>
             <Input
               value={hourlyTokenLimit}
               onChange={(e) => setHourlyTokenLimit(e.target.value.replace(/[^0-9]/g, ""))}
-              placeholder="Unlimited"
+              placeholder={t("unlimited")}
               inputMode="numeric"
             />
             <p className="text-xs text-text-muted mt-1">
-              Used this hour: {hourTokenUsed.toLocaleString()} tokens.
+              {t("usedThisHourTokens", { count: hourTokenUsed.toLocaleString() })}
             </p>
           </div>
           <div>
-            <label className="text-sm font-medium text-text-main mb-1.5 block">Requests/day</label>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">
+              {t("requestsPerDay")}
+            </label>
             <Input
               value={requestLimitDaily}
               onChange={(e) => setRequestLimitDaily(e.target.value.replace(/[^0-9]/g, ""))}
-              placeholder="Unlimited"
+              placeholder={t("unlimited")}
               inputMode="numeric"
             />
-            <p className="text-xs text-text-muted mt-1">Enforced as a daily request window.</p>
+            <p className="text-xs text-text-muted mt-1">{t("dailyRequestWindow")}</p>
           </div>
           <div className="sm:col-span-2">
-            <label className="text-sm font-medium text-text-main mb-1.5 block">Internal note</label>
+            <label className="text-sm font-medium text-text-main mb-1.5 block">
+              {t("internalNote")}
+            </label>
             <textarea
               value={internalNote}
               onChange={(e) => setInternalNote(e.target.value)}
-              placeholder="Operator note"
+              placeholder={t("operatorNote")}
               rows={2}
               className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background text-text-main"
             />
@@ -2538,9 +2450,7 @@ const PermissionsModal = memo(function PermissionsModal({
           <div className="flex items-start justify-between gap-3">
             <div className="flex flex-col gap-1">
               <p className="text-sm font-medium text-text-main">{t("expirationDate")}</p>
-              <p className="text-xs text-text-muted">
-                Key will automatically stop working after this date.
-              </p>
+              <p className="text-xs text-text-muted">{t("expirationAutoStop")}</p>
             </div>
             <div className="flex items-center gap-1">
               {[1, 3, 7].map((days) => (
@@ -2579,16 +2489,14 @@ const PermissionsModal = memo(function PermissionsModal({
             onClick={() => setExpiresAt("")}
             className="w-fit rounded-md border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-red-500/40 hover:text-red-500"
           >
-            Clear expiry
+            {t("clearExpiry")}
           </button>
         </div>
         {/* Management Access */}
         <div className="flex flex-col gap-2 p-3 rounded-lg border border-border bg-surface/40">
           <div className="flex flex-col gap-1">
             <p className="text-sm font-medium text-text-main">{t("managementAccess")}</p>
-            <p className="text-xs text-text-muted">
-              Allow this API key to manage OmniRoute configuration.
-            </p>
+            <p className="text-xs text-text-muted">{t("managementAccessDescription")}</p>
           </div>
           <button
             role="switch"
@@ -2787,7 +2695,7 @@ const PermissionsModal = memo(function PermissionsModal({
                       : "text-text-muted hover:bg-black/5 dark:hover:bg-white/5"
                   }`}
                 >
-                  All
+                  {t("allowAllConnections")}
                 </button>
                 <button
                   onClick={() => setAllowAllConnections(false)}
@@ -2797,20 +2705,20 @@ const PermissionsModal = memo(function PermissionsModal({
                       : "text-text-muted hover:bg-black/5 dark:hover:bg-white/5"
                   }`}
                 >
-                  Restrict
+                  {t("restrictConnections")}
                 </button>
               </div>
             </div>
             <p className="text-xs text-text-muted">
               {allowAllConnections
-                ? "This key can use any active connection."
-                : `Restricted to ${selectedConnections.length} connection${selectedConnections.length !== 1 ? "s" : ""}.`}
+                ? t("anyActiveConnection")
+                : t("restrictedConnections", { count: selectedConnections.length })}
             </p>
             {!allowAllConnections && (
               <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
                 {Object.entries(
                   allConnections.reduce<Record<string, ProviderConnection[]>>((acc, conn) => {
-                    const p = conn.provider || "Other";
+                    const p = conn.provider || t("otherProvider");
                     if (!acc[p]) acc[p] = [];
                     acc[p].push(conn);
                     return acc;
@@ -2849,7 +2757,9 @@ const PermissionsModal = memo(function PermissionsModal({
                               {conn.name || conn.id.slice(0, 8)}
                             </span>
                             {!conn.isActive && (
-                              <span className="text-[9px] text-red-400 shrink-0">inactive</span>
+                              <span className="text-[9px] text-red-400 shrink-0">
+                                {t("inactive")}
+                              </span>
                             )}
                           </button>
                         );

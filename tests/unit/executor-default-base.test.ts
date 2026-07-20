@@ -532,7 +532,7 @@ test("DefaultExecutor applies Codex-compatible headers and request shape to exte
 
   assert.equal(headers.Authorization, "Bearer sk-test");
   assert.equal(headers.Accept, "text/event-stream");
-  assert.equal(headers.Version, "0.132.0");
+  assert.equal(headers.Version, "0.144.6");
   assert.equal(headers["Openai-Beta"], "responses=experimental");
   assert.equal(headers.originator, "codex_cli_rs");
   assert.equal(body.model, "cx/gpt-5.5");

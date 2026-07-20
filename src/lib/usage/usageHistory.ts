@@ -15,6 +15,7 @@ import { shouldPersistToDisk } from "./migrations";
 import {
   getLoggedInputTokens,
   getLoggedOutputTokens,
+  getNonCachedInputTokens,
   getPromptCacheCreationTokens,
   getPromptCacheReadTokens,
   getReasoningTokens,
@@ -379,13 +380,14 @@ export async function saveRequestUsage(entry: any) {
       timestamp
     );
 
-    const totalBillableTokens = inputTokens + outputTokens;
+    const quotaInputTokens = getNonCachedInputTokens(entry.tokens);
+    const totalBillableTokens = quotaInputTokens + outputTokens;
     if (entry.success !== false && typeof entry.apiKeyId === "string" && totalBillableTokens > 0) {
       if (typeof entry.quotaReservationId === "string" && entry.quotaReservationId) {
         settleApiKeyUsageReservation({
           reservationId: entry.quotaReservationId,
           actualTokens: totalBillableTokens,
-          inputTokens,
+          inputTokens: quotaInputTokens,
           outputTokens,
           usageSource: "actual",
         });

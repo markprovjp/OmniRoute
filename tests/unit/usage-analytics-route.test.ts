@@ -7,7 +7,9 @@ import path from "node:path";
 const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-usage-analytics-route-"));
 process.env.DATA_DIR = TEST_DATA_DIR;
 const ORIGINAL_API_KEY_SECRET = process.env.API_KEY_SECRET;
+const ORIGINAL_INITIAL_PASSWORD = process.env.INITIAL_PASSWORD;
 process.env.API_KEY_SECRET = "test-usage-analytics-secret";
+delete process.env.INITIAL_PASSWORD;
 
 const core = await import("../../src/lib/db/core.ts");
 const localDb = await import("../../src/lib/localDb.ts");
@@ -82,6 +84,11 @@ test.after(() => {
   } else {
     process.env.API_KEY_SECRET = ORIGINAL_API_KEY_SECRET;
   }
+  if (ORIGINAL_INITIAL_PASSWORD === undefined) {
+    delete process.env.INITIAL_PASSWORD;
+  } else {
+    process.env.INITIAL_PASSWORD = ORIGINAL_INITIAL_PASSWORD;
+  }
 });
 
 test("GET /api/usage/analytics returns summary with aggregated metrics", async () => {
@@ -148,6 +155,72 @@ test("GET /api/usage/analytics resolves Codex GPT-5.5 pricing through provider a
   assertClose(body.byProvider[0].cost, 0.02);
   assert.equal(body.byModel[0].model, "gpt-5.5");
   assertClose(body.byModel[0].cost, 0.02);
+});
+
+test("GET /api/usage/analytics excludes Codex cache from quota totals but preserves raw cost", async () => {
+  await localDb.updatePricing({
+    codex: { "gpt-5.5": { input: 1, cached: 0.5, output: 2 } },
+  });
+  const db = core.getDbInstance();
+  db.prepare(
+    `INSERT INTO usage_history (
+       provider, model, connection_id, api_key_id, api_key_name,
+       tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation,
+       success, latency_ms, service_tier, timestamp
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    "codex",
+    "gpt-5.5",
+    "codex-cache-conn",
+    "codex-cache-key",
+    "Codex Cache Key",
+    3_514_237,
+    18_232,
+    3_393_792,
+    0,
+    1,
+    250,
+    "standard",
+    new Date().toISOString()
+  );
+
+  const response = await analyticsRoute.GET(makeRequest("http://localhost/api/usage/analytics"));
+  const body = await response.json();
+  const expectedInput = 120_445;
+  const expectedTotal = 138_677;
+  const expectedCost = 1.853805;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.summary.promptTokens, expectedInput);
+  assert.equal(body.summary.completionTokens, 18_232);
+  assert.equal(body.summary.totalTokens, expectedTotal);
+  assertClose(body.summary.totalCost, expectedCost);
+
+  for (const row of [
+    body.dailyTrend[0],
+    body.byModel[0],
+    body.byProvider[0],
+    body.byAccount[0],
+    body.byConnection[0],
+    body.byApiKey[0],
+    body.byServiceTier[0],
+  ]) {
+    assert.equal(row.promptTokens, expectedInput);
+    assert.equal(row.completionTokens, 18_232);
+    assert.equal(row.totalTokens, expectedTotal);
+  }
+
+  assertClose(body.byModel[0].cost, expectedCost);
+  assertClose(body.byProvider[0].cost, expectedCost);
+  assertClose(body.byAccount[0].cost, expectedCost);
+  assertClose(body.byApiKey[0].cost, expectedCost);
+  assertClose(body.byServiceTier[0].cost, expectedCost);
+  assert.equal(Object.values(body.activityMap)[0], expectedTotal);
+  assert.equal(
+    body.weeklyPattern.reduce((sum, row) => sum + row.totalTokens, 0),
+    expectedTotal
+  );
+  assert.equal(Object.values(body.dailyByModel[0]).includes(expectedTotal), true);
 });
 
 test("GET /api/usage/analytics applies Codex Fast tier multipliers and exposes tier split", async () => {

@@ -8,7 +8,10 @@ import {
   SEARCH_PROVIDERS,
   SEARCH_CREDENTIAL_FALLBACKS,
 } from "@omniroute/open-sse/config/searchRegistry.ts";
-import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
+import {
+  addVietnameseMessageToErrorPayload,
+  errorResponse,
+} from "@omniroute/open-sse/utils/error.ts";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import * as log from "@/sse/utils/logger";
 import { toJsonErrorPayload } from "@/shared/utils/upstreamError";
@@ -255,7 +258,10 @@ export async function POST(request: Request) {
     });
   } catch (err: any) {
     if (err instanceof SearchError) {
-      const errorPayload = toJsonErrorPayload(err.message, "Search provider error");
+      const errorPayload = addVietnameseMessageToErrorPayload(
+        err.statusCode,
+        toJsonErrorPayload(err.message, "Search provider error")
+      );
       return new Response(JSON.stringify(errorPayload), {
         status: err.statusCode,
         headers: { "Content-Type": "application/json", ...CORS_HEADERS },
@@ -263,7 +269,10 @@ export async function POST(request: Request) {
     }
 
     log.error("SEARCH", `Unexpected error: ${err.message}`);
-    const errorPayload = toJsonErrorPayload(err.message, "Internal search error");
+    const errorPayload = addVietnameseMessageToErrorPayload(
+      500,
+      toJsonErrorPayload(err.message, "Internal search error")
+    );
     return new Response(JSON.stringify(errorPayload), {
       status: 500,
       headers: { "Content-Type": "application/json", ...CORS_HEADERS },

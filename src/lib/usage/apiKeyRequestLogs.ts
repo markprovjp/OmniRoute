@@ -1,5 +1,6 @@
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 import { getDbInstance } from "@/lib/db/core";
+import { getNonCachedInputTokens } from "./tokenAccounting";
 
 type RequestLogRow = {
   id: string;
@@ -57,6 +58,15 @@ export interface ApiKeyRequestLogSummary {
   returned: number;
   errors: number;
   averageLatencyMs: number | null;
+}
+
+export interface ApiKeyRequestLogPage {
+  logs: ApiKeyRequestLog[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  summary: ApiKeyRequestLogSummary;
 }
 
 function toNumber(value: unknown): number {
@@ -120,8 +130,15 @@ function mapRequestLogRow(row: RequestLogRow): ApiKeyRequestLog {
     toStringOrNull(row.provider),
     toStringOrNull(row.provider_node_prefix)
   );
-  const input = toNumber(row.tokens_in);
+  const rawInput = toNumber(row.tokens_in);
   const output = toNumber(row.tokens_out);
+  const cacheRead = toNullableNumber(row.tokens_cache_read);
+  const cacheWrite = toNullableNumber(row.tokens_cache_creation);
+  const input = getNonCachedInputTokens({
+    input: rawInput,
+    cacheRead: cacheRead ?? 0,
+    cacheCreation: cacheWrite ?? 0,
+  });
   const reasoning = toNullableNumber(row.tokens_reasoning);
   const compressed = toNullableNumber(row.tokens_compressed);
 
@@ -139,11 +156,11 @@ function mapRequestLogRow(row: RequestLogRow): ApiKeyRequestLog {
     tokens: {
       input,
       output,
-      cacheRead: toNullableNumber(row.tokens_cache_read),
-      cacheWrite: toNullableNumber(row.tokens_cache_creation),
+      cacheRead,
+      cacheWrite,
       reasoning,
       compressed,
-      total: input + output + (reasoning ?? 0),
+      total: input + output,
     },
     cacheSource: toStringOrNull(row.cache_source) || "upstream",
     sourceFormat: toStringOrNull(row.source_format),
@@ -165,28 +182,33 @@ export function summarizeApiKeyRequestLogs(logs: ApiKeyRequestLog[]): ApiKeyRequ
   };
 }
 
+function requestLogFilter(apiKeyId: string, status: ApiKeyRequestLogStatus) {
+  const conditions = ["cl.api_key_id = @apiKeyId"];
+  if (status === "success") {
+    conditions.push("cl.status >= 200 AND cl.status < 400 AND cl.error_summary IS NULL");
+  } else if (status === "error") {
+    conditions.push("(cl.status >= 400 OR cl.error_summary IS NOT NULL)");
+  }
+  return { conditions, params: { apiKeyId } };
+}
+
 export function getApiKeyRequestLogs({
   apiKeyId,
   limit,
   status,
+  offset = 0,
 }: {
   apiKeyId: string;
   limit?: number;
   status?: ApiKeyRequestLogStatus;
+  offset?: number;
 }): ApiKeyRequestLog[] {
   if (!apiKeyId) return [];
 
   const safeLimit = normalizeApiKeyRequestLogLimit(limit);
   const safeStatus = normalizeApiKeyRequestLogStatus(status);
-  const conditions = ["cl.api_key_id = @apiKeyId"];
-  const params: Record<string, unknown> = { apiKeyId, limit: safeLimit };
-
-  if (safeStatus === "success") {
-    conditions.push("cl.status >= 200 AND cl.status < 400 AND cl.error_summary IS NULL");
-  } else if (safeStatus === "error") {
-    conditions.push("(cl.status >= 400 OR cl.error_summary IS NOT NULL)");
-  }
-
+  const safeOffset = Math.max(0, Math.floor(Number(offset) || 0));
+  const { conditions, params } = requestLogFilter(apiKeyId, safeStatus);
   const rows = getDbInstance()
     .prepare(
       `
@@ -216,10 +238,59 @@ export function getApiKeyRequestLogs({
       LEFT JOIN provider_nodes pn ON pn.id = cl.provider
       WHERE ${conditions.join(" AND ")}
       ORDER BY cl.timestamp DESC
-      LIMIT @limit
+      LIMIT @limit OFFSET @offset
     `
     )
-    .all(params) as RequestLogRow[];
+    .all({ ...params, limit: safeLimit, offset: safeOffset }) as RequestLogRow[];
 
   return rows.map(mapRequestLogRow);
+}
+
+export function getApiKeyRequestLogPage({
+  apiKeyId,
+  page = 1,
+  pageSize = 10,
+  status,
+}: {
+  apiKeyId: string;
+  page?: number;
+  pageSize?: number;
+  status?: ApiKeyRequestLogStatus;
+}): ApiKeyRequestLogPage {
+  const safePageSize = Math.min(25, normalizeApiKeyRequestLogLimit(pageSize));
+  const safeStatus = normalizeApiKeyRequestLogStatus(status);
+  if (!apiKeyId) {
+    return {
+      logs: [],
+      page: 1,
+      pageSize: safePageSize,
+      total: 0,
+      totalPages: 1,
+      summary: summarizeApiKeyRequestLogs([]),
+    };
+  }
+
+  const { conditions, params } = requestLogFilter(apiKeyId, safeStatus);
+  const countRow = getDbInstance()
+    .prepare(`SELECT COUNT(*) AS total FROM call_logs cl WHERE ${conditions.join(" AND ")}`)
+    .get(params) as { total?: number } | undefined;
+  const total = toNumber(countRow?.total);
+  const totalPages = Math.max(1, Math.ceil(total / safePageSize));
+  const requestedPage = Math.max(1, Math.floor(Number(page) || 1));
+  const safePage = Math.min(requestedPage, totalPages);
+  const logs = getApiKeyRequestLogs({
+    apiKeyId,
+    limit: safePageSize,
+    status: safeStatus,
+    offset: (safePage - 1) * safePageSize,
+  });
+
+  return {
+    logs,
+    page: safePage,
+    pageSize: safePageSize,
+    total,
+    totalPages,
+    summary: summarizeApiKeyRequestLogs(logs),
+  };
 }

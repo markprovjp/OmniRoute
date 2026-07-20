@@ -69,6 +69,27 @@ export function getLoggedInputTokens(tokens: unknown): number {
   return promptTokens;
 }
 
+/**
+ * Return input tokens that are not covered by provider cache accounting.
+ *
+ * `getLoggedInputTokens` intentionally preserves the provider's raw prompt
+ * total for cost calculation and historical compatibility. Quota and primary
+ * token-usage displays use this value instead: cached read and cache creation
+ * tokens are reported separately and are not counted in the Codex-style total.
+ */
+export function getNonCachedInputTokens(tokens: unknown): number {
+  return Math.max(
+    0,
+    getLoggedInputTokens(tokens) -
+      getPromptCacheReadTokens(tokens) -
+      getPromptCacheCreationTokens(tokens)
+  );
+}
+
+export function getQuotaTokenTotal(tokens: unknown): number {
+  return getNonCachedInputTokens(tokens) + getLoggedOutputTokens(tokens);
+}
+
 export function getLoggedOutputTokens(tokens: unknown): number {
   const tokenRecord = asRecord(tokens);
   if (tokenRecord.output !== undefined && tokenRecord.output !== null) {
@@ -149,7 +170,7 @@ export function getReasoningTokensOrNull(tokens: unknown): number | null {
 }
 
 export function formatUsageLog(tokens: unknown): string {
-  const input = getLoggedInputTokens(tokens);
+  const input = getNonCachedInputTokens(tokens);
   const output = getLoggedOutputTokens(tokens);
   const cacheRead = getPromptCacheReadTokens(tokens);
   const cacheWrite = getPromptCacheCreationTokens(tokens);

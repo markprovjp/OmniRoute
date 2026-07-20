@@ -156,10 +156,10 @@ test("CodexExecutor.buildHeaders binds workspace ids and disables SSE accept for
   assert.equal(standardHeaders.Authorization, "Bearer codex-token");
   assert.equal(standardHeaders.Accept, "text/event-stream");
   assert.equal(standardHeaders["chatgpt-account-id"], "workspace-1");
-  assert.equal(standardHeaders.Version, "0.132.0");
+  assert.equal(standardHeaders.Version, "0.144.6");
   assert.equal(standardHeaders["Openai-Beta"], "responses=experimental");
   assert.equal(standardHeaders["X-Codex-Beta-Features"], "responses_websockets");
-  assert.equal(standardHeaders["User-Agent"], "codex-cli/0.132.0 (Windows 10.0.26200; x64)");
+  assert.equal(standardHeaders["User-Agent"], "codex-cli/0.144.6 (Windows 10.0.26200; x64)");
   assert.equal(compactHeaders.Accept, "application/json");
 });
 
@@ -185,7 +185,7 @@ test("CodexExecutor.buildHeaders honors safe env overrides for Version and User-
     },
     () => {
       const headers = executor.buildHeaders({ accessToken: "codex-token" }, true);
-      assert.equal(headers.Version, "0.132.0");
+      assert.equal(headers.Version, "0.144.6");
       assert.equal(headers["User-Agent"], "custom-codex/9.9.9");
     }
   );
@@ -222,12 +222,12 @@ test("CodexExecutor.transformRequest injects default instructions, clamps reason
   assert.equal(result.stream_options, undefined);
 });
 
-test("CodexExecutor.transformRequest normalizes max reasoning_effort to xhigh", () => {
+test("CodexExecutor.transformRequest preserves max reasoning_effort for GPT-5.6 Sol", () => {
   const executor = new CodexExecutor();
   const result = executor.transformRequest(
-    "gpt-5.5",
+    "gpt-5.6-sol",
     {
-      model: "gpt-5.5",
+      model: "gpt-5.6-sol",
       input: [],
       reasoning_effort: "max",
     },
@@ -237,7 +237,7 @@ test("CodexExecutor.transformRequest normalizes max reasoning_effort to xhigh", 
     }
   );
 
-  assert.equal(result.reasoning.effort, "xhigh");
+  assert.equal(result.reasoning.effort, "max");
   assert.equal(result.reasoning_effort, undefined);
 });
 

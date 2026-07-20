@@ -813,6 +813,32 @@ function parseDelayString(value: unknown): number | null {
 export function parseRetryFromErrorText(errorText: unknown): number | null {
   if (!errorText || typeof errorText !== "string") return null;
 
+  // Codex OAuth quota errors are JSON payloads rather than prose. Preserve the
+  // provider's exact reset window so an exhausted account is not selected again
+  // every few seconds while its Plus quota is still unavailable.
+  const MAX_UPSTREAM_RETRY_MS = 30 * 24 * 60 * 60 * 1000;
+  const clampRetryMs = (value: number) =>
+    value > 0 && Number.isFinite(value) ? Math.min(value, MAX_UPSTREAM_RETRY_MS) : null;
+  try {
+    const parsed = JSON.parse(errorText) as Record<string, unknown>;
+    const payload =
+      parsed.error && typeof parsed.error === "object"
+        ? (parsed.error as Record<string, unknown>)
+        : parsed;
+
+    const relativeSeconds = Number(payload.resets_in_seconds);
+    const relativeMs = clampRetryMs(relativeSeconds * 1000);
+    if (relativeMs !== null) return relativeMs;
+
+    const resetAt = Number(payload.resets_at);
+    if (Number.isFinite(resetAt) && resetAt > 0) {
+      const resetAtMs = resetAt > 10_000_000_000 ? resetAt : resetAt * 1000;
+      return clampRetryMs(resetAtMs - Date.now());
+    }
+  } catch {
+    // Non-JSON provider errors continue through the prose parsers below.
+  }
+
   // Issue #2321: Anthropic OAuth occasionally embeds an absolute ISO 8601
   // timestamp instead of a relative duration (e.g. "Try again at
   // 2026-05-17T10:00:00Z" or "Please wait until 2026-05-17T10:00:00.000Z").

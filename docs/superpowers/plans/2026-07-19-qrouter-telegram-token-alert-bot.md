@@ -4,7 +4,7 @@
 
 **Goal:** Build and run `@qrouter_token_bot` so customers can securely link an OmniRoute API key, inspect masked usage, and receive deduplicated 90/95/100 percent and expiry alerts.
 
-**Architecture:** A grammY long-polling process consumes Telegram updates while OmniRoute remains the source of truth for key status, usage, and alert thresholds. One-time hashed claim tokens link private Telegram chats to API-key IDs; SQLite persists subscriptions, poller lease state, and alert delivery dedupe without storing raw customer keys.
+**Architecture:** A grammY long-polling process consumes Telegram updates while OmniRoute remains the source of truth for key status, usage, and alert thresholds. The primary onboarding path validates a directly submitted API key in a private chat, best-effort deletes its Telegram message, and persists only the resolved API-key ID. One-time hashed claims remain as a backward-compatible alternative. SQLite persists subscriptions, poller lease state, and alert delivery dedupe without storing raw customer keys.
 
 **Tech Stack:** Node.js 24, TypeScript 5.9, grammY, `@grammyjs/runner`, `@grammyjs/ratelimiter`, Next.js App Router, better-sqlite3, Zod, Node test runner.
 
@@ -12,12 +12,18 @@
 
 - Run on Node.js `>=22.22.3 <23 || >=24.0.0 <27`; live verification uses `D:\tools\node-v24.15.0-win-x64\node.exe`.
 - Keep the bot token only in ignored `.env.telegram.local` for local testing and `QROUTER_TELEGRAM_BOT_TOKEN` in production.
-- Never persist, log, or render a raw customer API key or claim token.
-- Accept customer commands only in private Telegram chats.
+- Never persist, log, or render a raw customer API key or claim token. Directly submitted key messages must be deleted on a best-effort basis and never echoed.
+- Accept customer commands and API-key submissions only in private Telegram chats.
 - Reuse `buildApiKeyUsageAlerts`; do not duplicate quota accounting or enforcement.
 - General commands: 6 per minute per chat; invalid claims: 5 per 15 minutes per chat.
 - Monitor active subscriptions every 60 seconds with a non-overlap guard.
 - Preserve all unrelated dirty-worktree changes and stage only task-owned files.
+
+---
+
+## 2026-07-20 Direct-token amendment
+
+The approved product behavior now makes direct private-chat API-key submission the primary onboarding path. Implementation must use the existing API-key lifecycle validator, resolve only the internal key ID, persist no raw key, delete the inbound Telegram message on a best-effort basis, return one generic invalid-credential response, and retain hashed claims only for backward compatibility. The focused bot, DB, and runtime tests cover this amendment.
 
 ---
 
@@ -363,8 +369,161 @@ Stage only Task 1-7 source, migration, package, env-template, and tests. Exclude
 
 `feat(telegram): ship customer quota alert bot`
 
+## 2026-07-20 Minimal production UX amendment
+
+The user approved Option A: show the complete usage/quota/model snapshot but omit recent request
+logs. The bot must expose one `/start` command and exactly one state-aware alert toggle button.
+Production runs as an isolated sidecar against the existing production data volume; deployment must
+not rebuild or recreate `omniroute-prod`.
+
+### Task 8: Minimal one-button bot UX
+
+**Files:**
+- Modify: `src/lib/telegramTokenBot/bot.ts`
+- Modify: `src/lib/telegramTokenBot/messages.ts`
+- Modify: `src/lib/telegramTokenBot/alertMonitor.ts`
+- Modify: `src/lib/telegramTokenBot/runtime.ts`
+- Test: `tests/unit/telegram-token-bot.test.ts`
+- Test: `tests/unit/telegram-alert-monitor.test.ts`
+- Test: `tests/unit/telegram-token-bot-runtime.test.ts`
+
+**Interfaces:**
+- `getUsage(apiKeyId)` returns the existing `ApiKeyCustomerUsage` contract.
+- `setMute(chatId, null)` enables alerts.
+- `setMute(chatId, new Date("9999-12-31T23:59:59.999Z"))` disables all alerts.
+- Callback allowlist becomes exactly `toggle_alerts`.
+
+- [ ] Write handler tests asserting a submitted key automatically enables alerts, returns the full
+      Option A snapshot, escapes all database strings, stays below 4,096 characters, and renders
+      only `🔕 Tắt cảnh báo`.
+- [ ] Write callback tests asserting the same button toggles to `🔔 Bật cảnh báo`, changes no
+      subscription ownership, and edits the keyboard without sending a new message.
+- [ ] Write monitor tests asserting disabled alerts suppress warning, exhausted, and expiry
+      deliveries until re-enabled.
+- [ ] Run the three focused tests and observe failures caused by the existing multi-command UI,
+      short formatter, and terminal-alert mute bypass.
+- [ ] Replace the narrow Telegram usage type with `ApiKeyCustomerUsage`, add a bounded HTML
+      formatter for all approved sections and top token-consuming models, remove legacy command
+      handlers/buttons, and make successful key submission call `setMute(chatId, null)` before
+      formatting usage.
+- [ ] Change the alert monitor to skip every candidate while the subscription is muted and remove
+      obsolete `/usage` and `/mute` instructions from automatic alert copy.
+- [ ] Set the Telegram command menu to only `{ command: "start", description: "Kiểm tra API key QRouter" }`.
+- [ ] Re-run focused tests until green.
+
+### Task 9: Reproducible production sidecar
+
+**Files:**
+- Create: `scripts/build/build-telegram-bot.mjs`
+- Create: `Dockerfile.telegram`
+- Modify: `docker-compose.prod.yml`
+- Modify: `package.json`
+- Modify: `package-lock.json`
+- Test: `tests/unit/telegram-production-packaging.test.ts`
+
+**Interfaces:**
+- Build output: `.dist/telegram/telegram-token-bot.mjs`.
+- Production image: `omniroute-telegram-bot:prod`.
+- Production service: `omniroute-telegram-bot`.
+- Secret env file: `.env.telegram` with mode `0600`; never committed or printed.
+- Shared volume: `omniroute-prod-data:/app/data`.
+
+- [ ] Write a source-contract test asserting the sidecar has no ports, waits for
+      `omniroute-prod: service_healthy`, uses `restart: unless-stopped`, disables the inherited web
+      healthcheck, mounts the production data volume, and reads `.env` plus `.env.telegram`.
+- [ ] Write a build-contract test asserting the Dockerfile copies only the bundled entry point and
+      migrations into the Node 26 runtime image and never copies `.env*`.
+- [ ] Run the packaging test and observe failure because the sidecar files/service do not exist.
+- [ ] Add `esbuild` as a direct dev dependency and implement the deterministic Node ESM bundle with
+      `platform: "node"`, `target: "node26"`, and no embedded credentials.
+- [ ] Add `npm run build:telegram` and build the sidecar image locally from `Dockerfile.telegram`.
+- [ ] Run the focused packaging test and start the image against an isolated temporary SQLite
+      volume with fake Telegram API dependencies where possible; verify migration discovery and
+      bundle startup errors are actionable.
+
+### Task 10: Production deployment and smoke verification
+
+**Files:**
+- Deploy only task-owned files to a timestamped directory under `/opt` on `84.247.144.97`.
+- Preserve the active release and `omniroute-prod` container unchanged.
+
+- [ ] Run Prettier, focused ESLint, focused Telegram tests, `git diff --check`, and classify the
+      existing unrelated core typecheck failures.
+- [ ] Create a SQLite backup through the SQLite backup API or an online-safe backup command before
+      starting the new sidecar; verify `PRAGMA integrity_check` returns `ok`.
+- [ ] Build `omniroute-telegram-bot:prod` in the timestamped deployment directory and transfer the
+      ignored local Telegram env file directly to `.env.telegram` with mode `0600`, without reading
+      or printing its values.
+- [ ] Stop the exact local `scripts/telegram/token-bot.ts` PID and wait until no local
+      `getUpdates` consumer remains.
+- [ ] Start only `omniroute-telegram-bot`; do not run a compose command that recreates
+      `omniroute-prod`, Redis, PostgreSQL, PgBouncer, or the watchdog.
+- [ ] Verify the sidecar remains running across two lease-renewal intervals, logs contain no secret
+      patterns, the production DB records the new migration, and Telegram `getMyCommands` exposes
+      only `/start`.
+- [ ] Smoke-test one private-chat key submission against production data, confirm the response
+      contains the Option A sections and one toggle button, then verify toggling suppresses and
+      re-enables monitor delivery state without exposing the raw key.
+
+## 2026-07-20 Compact dashboard and paginated-log amendment
+
+The approved UX replaces the exhaustive usage dump with a compact dashboard, adds `/check`, and
+moves sanitized request logs behind a ten-row paginated view. All callback navigation edits the
+same Telegram message and is protected by per-chat cooldown and rolling-window limits. This
+amendment supersedes Task 8's one-button constraint and Task 10's `/start`-only command menu.
+
+### Task 11: Compact dashboard, `/check`, pagination, and action throttling
+
+**Files:**
+- Modify: `src/lib/usage/apiKeyRequestLogs.ts`
+- Modify: `src/lib/telegramTokenBot/bot.ts`
+- Modify: `src/lib/telegramTokenBot/messages.ts`
+- Modify: `src/lib/telegramTokenBot/runtime.ts`
+- Modify: `tests/unit/api-key-usage-route.test.ts`
+- Modify: `tests/unit/telegram-token-bot.test.ts`
+- Modify: `tests/unit/telegram-token-bot-runtime.test.ts`
+
+**Interfaces:**
+- Produce `getApiKeyRequestLogPage({ apiKeyId, page, pageSize, status })` returning sanitized
+  `{ logs, page, pageSize, total, totalPages, summary }`.
+- Add `getRequestLogPage(apiKeyId, page)` to `TelegramTokenBotDeps`.
+- Allow callback actions `refresh_dashboard`, `show_logs:<page>`, `refresh_logs:<page>`,
+  `show_dashboard`, `toggle_alerts`, and `noop` only.
+
+- [ ] Write a failing DB/service test that inserts 23 logs for one key plus one foreign-key log,
+      requests pages 1, 2, and 3 at size 10, and asserts lengths `10, 10, 3`, `totalPages === 3`,
+      newest-first ordering, page clamping, and no row from the foreign key.
+- [ ] Run `api-key-usage-route.test.ts` and verify RED because
+      `getApiKeyRequestLogPage` does not exist.
+- [ ] Implement a parameterized count query and a summary-row query with bounded `LIMIT` and
+      `OFFSET`. Clamp page size to `1..25`, clamp page to `1..totalPages`, and reuse the existing
+      sanitized `mapRequestLogRow` output.
+- [ ] Add failing bot tests for the compact dashboard, removal of the full model list and repeated
+      quota internals, `/check` without raw-key resubmission, ten-row log pages, next/previous
+      navigation, dashboard return, callback refresh, HTML escaping, and empty logs.
+- [ ] Add failing throttling tests using the injected clock: one accepted action per three seconds,
+      at most ten actions per rolling minute, throttled callbacks answer `Vui lòng chờ một chút`,
+      and throttled actions perform no usage/log query or message edit.
+- [ ] Replace the exhaustive formatter with a compact HTML dashboard containing key state/expiry,
+      today, last hour, lifetime, alert summary, reset, and checked time. Use compact `K/M/B`
+      number formatting and keep the result substantially below Telegram's 4,096-character limit.
+- [ ] Implement the ten-row log formatter with status icon, time, model, HTTP status, latency,
+      token total, and sanitized error. Build previous/next, page indicator, dashboard, and refresh
+      keyboards with short callback data and no key identifiers.
+- [ ] Implement `/check` and callback routing from the current subscription only. Commands send a
+      compact dashboard; callbacks use `editMessageText` so refresh and pagination do not add chat
+      messages. Keep all private-chat and raw-key protections.
+- [ ] Register exactly `/start` and `/check` in `runtime.ts`, inject
+      `getApiKeyRequestLogPage`, and rerun bot/runtime/service tests until GREEN.
+- [ ] Run the complete focused Telegram suite, Prettier, focused ESLint, build-contract tests,
+      secret-pattern scan, and `git diff --check`; record unrelated core typecheck failures.
+- [ ] Rebuild only the production Telegram sidecar, retain the pre-migration database backup,
+      start only that service, and verify zero restarts, active lease, `/start` plus `/check`, no
+      webhook, clean logs, compact dashboard, ten-row pagination, callback throttling, and healthy
+      unchanged main-app image.
+
 ## Plan Self-Review
 
-- Spec coverage: shared usage, secure claim linking, private-chat UX, persistence, 90/95/100 alerts, expiry alerts, anti-spam, lease, shutdown, live verification, and secret handling all have owning tasks.
+- Spec coverage: shared usage, secure claim linking, private-chat UX, persistence, 90/95/100 alerts, expiry alerts, anti-spam, lease, shutdown, compact dashboard, `/check`, ten-row request-log pagination, production sidecar deployment, live verification, and secret handling all have owning tasks.
 - Placeholder scan: complete; every implementation step is concrete.
 - Type consistency: the usage snapshot, subscription DB, claim route, bot runtime, and monitor interfaces are defined before consumers use them.

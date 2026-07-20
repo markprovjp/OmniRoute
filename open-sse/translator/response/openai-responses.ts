@@ -737,8 +737,10 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
         responseUsage.reasoning_tokens ||
         0;
 
-      // prompt_tokens = input_tokens + cache_read + cache_creation (all prompt-side tokens)
-      const promptTokens = inputTokens + cacheReadTokens + cacheCreationTokens;
+      // OpenAI Responses `input_tokens` already includes cached input. Keep the
+      // protocol prompt total unchanged and expose cache separately in details;
+      // adding cacheReadTokens here would count the same tokens twice.
+      const promptTokens = inputTokens;
 
       state.usage = {
         prompt_tokens: promptTokens,

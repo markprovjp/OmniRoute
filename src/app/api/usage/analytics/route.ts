@@ -33,6 +33,12 @@ function getRangeStartIso(range: string): string | null {
 }
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const NON_CACHED_INPUT_SQL =
+  "MAX(0, tokens_input - COALESCE(tokens_cache_read, 0) - COALESCE(tokens_cache_creation, 0))";
+const NON_CACHED_TOTAL_SQL = `${NON_CACHED_INPUT_SQL} + COALESCE(tokens_output, 0)`;
+const NON_CACHED_INPUT_QUALIFIED_SQL =
+  "MAX(0, usage_history.tokens_input - COALESCE(usage_history.tokens_cache_read, 0) - COALESCE(usage_history.tokens_cache_creation, 0))";
+const NON_CACHED_TOTAL_QUALIFIED_SQL = `${NON_CACHED_INPUT_QUALIFIED_SQL} + COALESCE(usage_history.tokens_output, 0)`;
 
 type PricingByProvider = Record<string, Record<string, Record<string, unknown>>>;
 type ComputeCostFromPricing = (
@@ -231,7 +237,7 @@ function computeUsageRowCost(
   return computeCostFromPricing(
     pricing,
     {
-      input: toNumber(row.promptTokens),
+      input: toNumber(row.rawPromptTokens ?? row.promptTokens),
       output: toNumber(row.completionTokens),
       cacheRead: toNumber(row.cacheReadTokens),
       cacheCreation: toNumber(row.cacheCreationTokens),
@@ -332,9 +338,9 @@ export async function GET(request: Request) {
         `
         SELECT
           COUNT(*) as totalRequests,
-          COALESCE(SUM(tokens_input), 0) as promptTokens,
+          COALESCE(SUM(${NON_CACHED_INPUT_SQL}), 0) as promptTokens,
           COALESCE(SUM(tokens_output), 0) as completionTokens,
-          COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens,
+          COALESCE(SUM(${NON_CACHED_TOTAL_SQL}), 0) as totalTokens,
           COUNT(DISTINCT model) as uniqueModels,
           COUNT(DISTINCT connection_id) as uniqueAccounts,
           COUNT(DISTINCT COALESCE(NULLIF(api_key_id, ''), NULLIF(api_key_name, ''))) as uniqueApiKeys,
@@ -354,9 +360,9 @@ export async function GET(request: Request) {
         SELECT
           DATE(timestamp) as date,
           COUNT(*) as requests,
-          COALESCE(SUM(tokens_input), 0) as promptTokens,
+          COALESCE(SUM(${NON_CACHED_INPUT_SQL}), 0) as promptTokens,
           COALESCE(SUM(tokens_output), 0) as completionTokens,
-          COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens
+          COALESCE(SUM(${NON_CACHED_TOTAL_SQL}), 0) as totalTokens
         FROM usage_history
         ${whereClause}
         GROUP BY DATE(timestamp)
@@ -411,7 +417,7 @@ export async function GET(request: Request) {
         `
         SELECT
           DATE(timestamp) as date,
-          COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens
+          COALESCE(SUM(${NON_CACHED_TOTAL_SQL}), 0) as totalTokens
         FROM usage_history
         WHERE ${heatmapConditions.join(" AND ")}
         GROUP BY DATE(timestamp)
@@ -428,12 +434,13 @@ export async function GET(request: Request) {
           LOWER(provider) as provider,
           COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
           COUNT(*) as requests,
-          COALESCE(SUM(tokens_input), 0) as promptTokens,
+          COALESCE(SUM(${NON_CACHED_INPUT_SQL}), 0) as promptTokens,
+          COALESCE(SUM(tokens_input), 0) as rawPromptTokens,
           COALESCE(SUM(tokens_output), 0) as completionTokens,
           COALESCE(SUM(tokens_cache_read), 0) as cacheReadTokens,
           COALESCE(SUM(tokens_cache_creation), 0) as cacheCreationTokens,
           COALESCE(SUM(tokens_reasoning), 0) as reasoningTokens,
-          COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens,
+          COALESCE(SUM(${NON_CACHED_TOTAL_SQL}), 0) as totalTokens,
           COALESCE(AVG(latency_ms), 0) as avgLatencyMs,
           COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) as successfulRequests,
           COALESCE(MAX(timestamp), '') as lastUsed
@@ -470,9 +477,9 @@ export async function GET(request: Request) {
         SELECT
           LOWER(provider) as provider,
           COUNT(*) as requests,
-          COALESCE(SUM(tokens_input), 0) as promptTokens,
+          COALESCE(SUM(${NON_CACHED_INPUT_SQL}), 0) as promptTokens,
           COALESCE(SUM(tokens_output), 0) as completionTokens,
-          COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens,
+          COALESCE(SUM(${NON_CACHED_TOTAL_SQL}), 0) as totalTokens,
           COALESCE(AVG(latency_ms), 0) as avgLatencyMs,
           COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) as successfulRequests
         FROM usage_history
@@ -510,9 +517,9 @@ export async function GET(request: Request) {
         SELECT
           COALESCE(NULLIF(c.display_name, ''), NULLIF(c.email, ''), NULLIF(c.name, ''), usage_history.connection_id, 'unknown') as account,
           COUNT(usage_history.id) as requests,
-          COALESCE(SUM(usage_history.tokens_input), 0) as promptTokens,
+          COALESCE(SUM(${NON_CACHED_INPUT_QUALIFIED_SQL}), 0) as promptTokens,
           COALESCE(SUM(usage_history.tokens_output), 0) as completionTokens,
-          COALESCE(SUM(usage_history.tokens_input + usage_history.tokens_output), 0) as totalTokens,
+          COALESCE(SUM(${NON_CACHED_TOTAL_QUALIFIED_SQL}), 0) as totalTokens,
           COALESCE(AVG(usage_history.latency_ms), 0) as avgLatencyMs,
           COALESCE(MAX(usage_history.timestamp), '') as lastUsed
         FROM usage_history
@@ -531,9 +538,9 @@ export async function GET(request: Request) {
         SELECT
           NULLIF(connection_id, '') as connectionId,
           COUNT(*) as requests,
-          COALESCE(SUM(tokens_input), 0) as promptTokens,
+          COALESCE(SUM(${NON_CACHED_INPUT_SQL}), 0) as promptTokens,
           COALESCE(SUM(tokens_output), 0) as completionTokens,
-          COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens,
+          COALESCE(SUM(${NON_CACHED_TOTAL_SQL}), 0) as totalTokens,
           COALESCE(AVG(latency_ms), 0) as avgLatencyMs,
           COALESCE(MAX(timestamp), '') as lastUsed
         FROM usage_history
@@ -559,12 +566,13 @@ export async function GET(request: Request) {
           LOWER(model) as model,
           COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
           COUNT(*) as requests,
-          COALESCE(SUM(tokens_input), 0) as promptTokens,
+          COALESCE(SUM(${NON_CACHED_INPUT_SQL}), 0) as promptTokens,
+          COALESCE(SUM(tokens_input), 0) as rawPromptTokens,
           COALESCE(SUM(tokens_output), 0) as completionTokens,
           COALESCE(SUM(tokens_cache_read), 0) as cacheReadTokens,
           COALESCE(SUM(tokens_cache_creation), 0) as cacheCreationTokens,
           COALESCE(SUM(tokens_reasoning), 0) as reasoningTokens,
-          COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens
+          COALESCE(SUM(${NON_CACHED_TOTAL_SQL}), 0) as totalTokens
         FROM usage_history
         ${apiKeyWhereClause}
         GROUP BY COALESCE(NULLIF(api_key_id, ''), NULLIF(api_key_name, ''), 'unknown'), NULLIF(api_key_id, ''), LOWER(provider), LOWER(model), serviceTier
@@ -581,12 +589,13 @@ export async function GET(request: Request) {
           LOWER(model) as model,
           COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
           COUNT(*) as requests,
-          COALESCE(SUM(tokens_input), 0) as promptTokens,
+          COALESCE(SUM(${NON_CACHED_INPUT_SQL}), 0) as promptTokens,
+          COALESCE(SUM(tokens_input), 0) as rawPromptTokens,
           COALESCE(SUM(tokens_output), 0) as completionTokens,
           COALESCE(SUM(tokens_cache_read), 0) as cacheReadTokens,
           COALESCE(SUM(tokens_cache_creation), 0) as cacheCreationTokens,
           COALESCE(SUM(tokens_reasoning), 0) as reasoningTokens,
-          COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens
+          COALESCE(SUM(${NON_CACHED_TOTAL_SQL}), 0) as totalTokens
         FROM usage_history
 
         ${whereClause}
@@ -639,7 +648,7 @@ export async function GET(request: Request) {
             DATE(timestamp) as date,
             strftime('%w', timestamp) as dayOfWeek,
             COUNT(*) as requests,
-            COALESCE(SUM(tokens_input + tokens_output), 0) as totalTokens
+            COALESCE(SUM(${NON_CACHED_TOTAL_SQL}), 0) as totalTokens
           FROM usage_history
           ${whereClause}
           GROUP BY DATE(timestamp), strftime('%w', timestamp)
@@ -750,7 +759,11 @@ export async function GET(request: Request) {
 
       // Group tokens by model for the day
       const model = normalizeModelName(row.model as string);
-      const tokens = Number(row.promptTokens) + Number(row.completionTokens);
+      const promptTokens = Math.max(
+        0,
+        Number(row.promptTokens) - Number(row.cacheReadTokens) - Number(row.cacheCreationTokens)
+      );
+      const tokens = promptTokens + Number(row.completionTokens);
 
       if (!dailyByModelMap[date]) dailyByModelMap[date] = {};
       dailyByModelMap[date][model] = (dailyByModelMap[date][model] || 0) + tokens;

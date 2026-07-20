@@ -4,6 +4,7 @@ import { Bot } from "grammy";
 import {
   acquireTelegramBotLease,
   claimTelegramAlertDelivery,
+  connectTelegramSubscription,
   consumeTelegramLinkClaim,
   disconnectTelegramSubscription,
   getTelegramLastProcessedUpdateId,
@@ -15,7 +16,9 @@ import {
   setTelegramLastProcessedUpdateId,
   setTelegramMute,
 } from "@/lib/db/telegramBot";
+import { getApiKeyMetadata, validateApiKey } from "@/lib/db/apiKeys";
 import { getApiKeyCustomerUsageById } from "@/lib/usage/apiKeyCustomerUsage";
+import { getApiKeyRequestLogPage } from "@/lib/usage/apiKeyRequestLogs";
 import {
   startTelegramAlertMonitor,
   type TelegramAlertMonitor,
@@ -55,6 +58,16 @@ function expectedUsername(env: NodeJS.ProcessEnv): string {
 
 function allowsWebhookDeletion(env: NodeJS.ProcessEnv): boolean {
   return env.QROUTER_TELEGRAM_ALLOW_DELETE_WEBHOOK === "true";
+}
+
+async function connectSubmittedApiKey(
+  token: string,
+  chatId: string
+): Promise<ReturnType<typeof connectTelegramSubscription>> {
+  if (!(await validateApiKey(token))) return null;
+  const metadata = await getApiKeyMetadata(token);
+  if (!metadata || metadata.id === "env-key") return null;
+  return connectTelegramSubscription(metadata.id, chatId);
 }
 
 export async function startTelegramTokenBot(
@@ -115,24 +128,20 @@ export async function startTelegramTokenBot(
     });
     createTelegramTokenBot({
       bot,
+      connectToken: connectSubmittedApiKey,
       consumeClaim: consumeTelegramLinkClaim,
       getSubscription: getTelegramSubscriptionByChat,
       setMute: setTelegramMute,
-      disconnect: disconnectTelegramSubscription,
       getUsage: getApiKeyCustomerUsageById,
+      getRequestLogPage: async (apiKeyId, page) =>
+        getApiKeyRequestLogPage({ apiKeyId, page, pageSize: 10 }),
       ...options.deps,
     });
     bot.catch(() => undefined);
 
     await bot.api.setMyCommands([
-      { command: "start", description: "Kết nối QRouter" },
-      { command: "status", description: "Trạng thái kết nối" },
-      { command: "usage", description: "Mức sử dụng" },
-      { command: "alerts", description: "Cảnh báo" },
-      { command: "mute", description: "Tắt cảnh báo 24 giờ" },
-      { command: "unmute", description: "Bật lại cảnh báo" },
-      { command: "disconnect", description: "Ngắt kết nối" },
-      { command: "help", description: "Trợ giúp" },
+      { command: "start", description: "Kết nối API key QRouter" },
+      { command: "check", description: "Xem lại usage của key" },
     ]);
 
     runner = runBot(bot, {

@@ -1,7 +1,11 @@
 import { handleImageEdit } from "@omniroute/open-sse/handlers/imageGeneration.ts";
 import { getProviderCredentials, clearRecoveredProviderState } from "@/sse/services/auth";
 import { parseImageModel, getImageProvider } from "@omniroute/open-sse/config/imageRegistry.ts";
-import { errorResponse, unavailableResponse } from "@omniroute/open-sse/utils/error.ts";
+import {
+  addVietnameseMessageToErrorPayload,
+  errorResponse,
+  unavailableResponse,
+} from "@omniroute/open-sse/utils/error.ts";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import * as log from "@/sse/utils/logger";
 import { toJsonErrorPayload } from "@/shared/utils/upstreamError";
@@ -164,7 +168,10 @@ export async function POST(request: Request) {
     });
   }
 
-  const errorPayload = toJsonErrorPayload((result as any).error, "Image edit provider error");
+  const errorPayload = addVietnameseMessageToErrorPayload(
+    (result as any).status,
+    toJsonErrorPayload((result as any).error, "Image edit provider error")
+  );
   return new Response(JSON.stringify(errorPayload), {
     status: (result as any).status,
     headers: { "Content-Type": "application/json" },

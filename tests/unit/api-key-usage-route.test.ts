@@ -16,6 +16,7 @@ const callLogs = await import("../../src/lib/usage/callLogs.ts");
 const usageRoute = await import("../../src/app/api/v1/usage/route.ts");
 const customerUsageRoute = await import("../../src/app/api/customer/usage/route.ts");
 const customerLogsRoute = await import("../../src/app/api/customer/logs/route.ts");
+const apiKeyRequestLogs = await import("../../src/lib/usage/apiKeyRequestLogs.ts");
 
 const MACHINE_ID = "1234567890abcdef";
 
@@ -87,6 +88,59 @@ test("GET /api/v1/usage returns request and token quota for the bearer API key",
     total_tokens: 150,
     last_used_at: body.models[0].last_used_at,
   });
+});
+
+test("Codex cached input is excluded from API-key quota while raw usage is retained", async () => {
+  const apiKey = await apiKeysDb.createApiKey("Codex cached quota", MACHINE_ID, {
+    tokenLimit: 1_000_000,
+    dailyTokenLimit: 1_000_000,
+    commercialKey: true,
+  });
+  await usageHistory.saveRequestUsage({
+    apiKeyId: apiKey.id,
+    apiKeyName: apiKey.name,
+    provider: "codex",
+    model: "gpt-5.5",
+    status: "200",
+    success: true,
+    tokens: {
+      prompt_tokens: 3_514_237,
+      completion_tokens: 18_232,
+      cached_tokens: 3_393_792,
+    },
+  });
+
+  const response = await usageRoute.GET(
+    new Request("http://localhost/api/v1/usage", {
+      headers: { authorization: `Bearer ${apiKey.key}` },
+    })
+  );
+  const body = (await response.json()) as any;
+  const db = core.getDbInstance();
+  const historyRow = db
+    .prepare(
+      `SELECT tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation
+       FROM usage_history WHERE api_key_id = ?`
+    )
+    .get(apiKey.id) as Record<string, number>;
+  const storedKey = await apiKeysDb.getApiKeyById(apiKey.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.tokens.total, 138_677);
+  assert.equal(body.tokenQuota.used, 138_677);
+  assert.equal(body.models[0].input_tokens, 120_445);
+  assert.equal(body.models[0].output_tokens, 18_232);
+  assert.equal(body.models[0].total_tokens, 138_677);
+  assert.equal(storedKey?.tokenUsed, 138_677);
+  assert.deepEqual(
+    { ...historyRow },
+    {
+      tokens_input: 3_514_237,
+      tokens_output: 18_232,
+      tokens_cache_read: 3_393_792,
+      tokens_cache_creation: 0,
+    }
+  );
 });
 
 test("POST /api/v1/usage accepts a key body for dashboard-style public usage checks", async () => {
@@ -301,7 +355,11 @@ test("POST /api/customer/logs returns only sanitized logs for the submitted key"
     false
   );
   assert.equal(body.logs[0].durationMs, 120_000);
-  assert.equal(body.logs[1].tokens.total, 145);
+  assert.equal(body.logs[1].tokens.input, 90);
+  assert.equal(body.logs[1].tokens.output, 40);
+  assert.equal(body.logs[1].tokens.cacheRead, 10);
+  assert.equal(body.logs[1].tokens.reasoning, 5);
+  assert.equal(body.logs[1].tokens.total, 130);
 
   for (const log of body.logs) {
     assert.equal("provider" in log, false);
@@ -313,6 +371,73 @@ test("POST /api/customer/logs returns only sanitized logs for the submitted key"
     assert.equal("requestBody" in log, false);
     assert.equal("responseBody" in log, false);
   }
+});
+
+test("API-key request log pages contain ten owned rows and clamp page boundaries", async () => {
+  const apiKey = await apiKeysDb.createApiKey("Paginated log key", MACHINE_ID, {
+    commercialKey: true,
+  });
+  const otherApiKey = await apiKeysDb.createApiKey("Foreign paginated log key", MACHINE_ID, {
+    commercialKey: true,
+  });
+
+  for (let index = 0; index < 23; index += 1) {
+    await callLogs.saveCallLog({
+      id: `page-log-${String(index).padStart(2, "0")}`,
+      timestamp: `2026-06-08T01:${String(index).padStart(2, "0")}:00.000Z`,
+      status: 200,
+      model: `model-${index}`,
+      provider: "codex",
+      duration: index * 10,
+      tokens: { input: index, output: 1 },
+      apiKeyId: apiKey.id,
+      apiKeyName: apiKey.name,
+    });
+  }
+  await callLogs.saveCallLog({
+    id: "foreign-page-log",
+    timestamp: "2026-06-08T02:00:00.000Z",
+    status: 500,
+    model: "foreign-model",
+    provider: "codex",
+    apiKeyId: otherApiKey.id,
+    apiKeyName: otherApiKey.name,
+  });
+
+  const first = apiKeyRequestLogs.getApiKeyRequestLogPage({
+    apiKeyId: apiKey.id,
+    page: 1,
+    pageSize: 10,
+  });
+  const second = apiKeyRequestLogs.getApiKeyRequestLogPage({
+    apiKeyId: apiKey.id,
+    page: 2,
+    pageSize: 10,
+  });
+  const clamped = apiKeyRequestLogs.getApiKeyRequestLogPage({
+    apiKeyId: apiKey.id,
+    page: 999,
+    pageSize: 10,
+  });
+
+  assert.equal(first.total, 23);
+  assert.equal(first.totalPages, 3);
+  assert.equal(first.page, 1);
+  assert.equal(first.logs.length, 10);
+  assert.equal(first.logs[0]?.id, "page-log-22");
+  assert.equal(
+    first.logs.some((log) => log.id === "foreign-page-log"),
+    false
+  );
+  assert.equal(second.page, 2);
+  assert.equal(second.logs.length, 10);
+  assert.equal(second.logs[0]?.id, "page-log-12");
+  assert.equal(clamped.page, 3);
+  assert.equal(clamped.logs.length, 3);
+  assert.deepEqual(
+    clamped.logs.map((log) => log.id),
+    ["page-log-02", "page-log-01", "page-log-00"]
+  );
 });
 
 test("POST /api/customer/logs supports status filtering and rejects invalid keys", async () => {

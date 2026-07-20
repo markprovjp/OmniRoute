@@ -79,12 +79,15 @@ const nextConfig = {
   // handler intercepts POSTs with multipart/form-data or
   // x-www-form-urlencoded content-types and enforces a 1 MB cap that
   // surfaces as a 413 with a confusing "Server Actions" hint, even on
-  // pure route handlers. 50 MB matches what most upstream LLM providers
-  // accept for image-bearing requests; tune via env if a deployment needs
-  // more.
+  // pure route handlers. 200 MB accommodates multi-image/document requests;
+  // tune via env if a deployment needs a different limit.
   experimental: {
+    // Next clones the incoming request body before route handlers run. Its
+    // framework default is 10 MB and silently truncates larger JSON payloads,
+    // which then surfaces as a misleading "Invalid JSON body" response.
+    proxyClientMaxBodySize: process.env.OMNIROUTE_PROXY_CLIENT_MAX_BODY_SIZE || "200mb",
     serverActions: {
-      bodySizeLimit: process.env.OMNIROUTE_SERVER_ACTIONS_BODY_LIMIT || "50mb",
+      bodySizeLimit: process.env.OMNIROUTE_SERVER_ACTIONS_BODY_LIMIT || "200mb",
     },
   },
   outputFileTracingRoot: projectRoot,

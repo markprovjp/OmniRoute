@@ -58,6 +58,23 @@ test("parseRetryFromErrorText parses both compact reset formats", () => {
   assert.equal(parseRetryFromErrorText("No reset metadata"), null);
 });
 
+test("parseRetryFromErrorText honors Codex usage_limit_reached reset metadata", () => {
+  const now = Date.now();
+  const resetInSeconds = 488_892;
+  const payload = JSON.stringify({
+    error: {
+      type: "usage_limit_reached",
+      message: "The usage limit has been reached",
+      resets_at: Math.floor((now + resetInSeconds * 1000) / 1000),
+      resets_in_seconds: resetInSeconds,
+    },
+  });
+
+  const parsed = parseRetryFromErrorText(payload);
+  assert.ok(parsed !== null);
+  assert.ok(Math.abs(parsed - resetInSeconds * 1000) < 2_000);
+});
+
 test("checkFallbackError marks deactivated accounts as permanent auth failures", () => {
   const result = checkFallbackError(401, "This account has been deactivated");
   assert.equal(result.shouldFallback, true);
