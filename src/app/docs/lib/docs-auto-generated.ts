@@ -246,6 +246,11 @@ export const autoNavSections: AutoGenNavSection[] = [
         fileName: "security/GUARDRAILS.md",
       },
       {
+        slug: "image-generation-control-plane",
+        title: "Image Generation Control Plane",
+        fileName: "security/IMAGE_GENERATION_CONTROL_PLANE.md",
+      },
+      {
         slug: "public-creds",
         title: "Public Credentials Handling",
         fileName: "security/PUBLIC_CREDS.md",
@@ -309,6 +314,11 @@ export const autoNavSections: AutoGenNavSection[] = [
         slug: "fly-io-deployment-guide",
         title: "OmniRoute Fly.io 部署指南",
         fileName: "ops/FLY_IO_DEPLOYMENT_GUIDE.md",
+      },
+      {
+        slug: "host-auto-deploy",
+        title: "Host-side Docker Auto-deploy",
+        fileName: "ops/HOST_AUTO_DEPLOY.md",
       },
       {
         slug: "proxy-guide",
@@ -690,11 +700,11 @@ export const autoSearchIndex: AutoGenSearchItem[] = [
       "Custom Headers",
       "Embeddings",
       "Image Generation",
+      "Image security and per-key limits",
       "List Models",
       "Compatibility Endpoints",
       "Dedicated Provider Routes",
       "Files API",
-      "Batches API",
     ],
   },
   {
@@ -1106,6 +1116,25 @@ export const autoSearchIndex: AutoGenSearchItem[] = [
     ],
   },
   {
+    slug: "image-generation-control-plane",
+    title: "Image Generation Control Plane",
+    fileName: "security/IMAGE_GENERATION_CONTROL_PLANE.md",
+    section: "Security",
+    content:
+      "OmniRoute applies a dedicated, fail-closed control plane to: - POST /v1/images/generations - POST /v1/providers/{provider}/images/generations - POST /v1/images/edits Each caller must use a managed OmniRoute API key. The key identifies one person and owns that person's image policy, quota, concurrenc",
+    headings: [
+      "Default policy",
+      "Per-person configuration",
+      "Request tracing",
+      "Provider compatibility basis",
+      "Safe audit queries",
+      "Rejection behavior",
+      "Production request example",
+      "Migration and rollout",
+      "Credential hygiene",
+    ],
+  },
+  {
     slug: "public-creds",
     title: "Public Credentials Handling",
     fileName: "security/PUBLIC_CREDS.md",
@@ -1316,6 +1345,23 @@ export const autoSearchIndex: AutoGenSearchItem[] = [
     ],
   },
   {
+    slug: "host-auto-deploy",
+    title: "Host-side Docker Auto-deploy",
+    fileName: "ops/HOST_AUTO_DEPLOY.md",
+    section: "Ops",
+    content:
+      "OmniRoute can deploy a selected public Git ref from a systemd service on the Docker host. The controller runs outside the application containers, so an OmniRoute restart or an interrupted agent connection does not terminate an in-progress deployment. The controller: 1. Fetches and resolves one exact",
+    headings: [
+      "Safety model",
+      "Install",
+      "One-shot deployment",
+      "Optional polling",
+      "Configuration",
+      "Observability",
+      "Manual application rollback",
+    ],
+  },
+  {
     slug: "proxy-guide",
     title: "🌐 OmniRoute Proxy Guide",
     fileName: "ops/PROXY_GUIDE.md",
@@ -1460,6 +1506,7 @@ export const autoAllSlugs: string[] = [
   "compliance",
   "error-sanitization",
   "guardrails",
+  "image-generation-control-plane",
   "public-creds",
   "route-guard-tiers",
   "stealth-guide",
@@ -1471,6 +1518,7 @@ export const autoAllSlugs: string[] = [
   "coverage-plan",
   "e2e-dashboard-shakedown-v3.8.0",
   "fly-io-deployment-guide",
+  "host-auto-deploy",
   "proxy-guide",
   "release-checklist",
   "sqlite-runtime",
