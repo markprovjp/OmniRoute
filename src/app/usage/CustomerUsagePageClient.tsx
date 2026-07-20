@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -221,9 +221,12 @@ export default function CustomerUsagePageClient() {
   const [usage, setUsage] = useState<CustomerUsageResponse | null>(null);
   const [logs, setLogs] = useState<CustomerLogsResponse | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
+  const [lookedUpApiKey, setLookedUpApiKey] = useState<string | null>(null);
   const [telegramLinkStatus, setTelegramLinkStatus] = useState<
-    "idle" | "loading" | "success" | "error"
+    "idle" | "loading" | "ready" | "error"
   >("idle");
+  const [telegramDeepLink, setTelegramDeepLink] = useState<string | null>(null);
+  const lookupSequence = useRef(0);
 
   const keyStateClass = useMemo(() => {
     if (!usage) return "bg-bg-subtle text-text-muted";
@@ -232,6 +235,20 @@ export default function CustomerUsagePageClient() {
       : "bg-red-500/10 text-red-600 dark:text-red-400";
   }, [usage]);
 
+  function handleApiKeyChange(value: string) {
+    // A displayed usage result is valid only for the exact key that was checked.
+    lookupSequence.current += 1;
+    setApiKey(value);
+    setLoading(false);
+    setError(null);
+    setUsage(null);
+    setLogs(null);
+    setLogsError(null);
+    setLookedUpApiKey(null);
+    setTelegramLinkStatus("idle");
+    setTelegramDeepLink(null);
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const key = apiKey.trim();
@@ -239,13 +256,19 @@ export default function CustomerUsagePageClient() {
       setError("Enter a share key first.");
       setUsage(null);
       setLogs(null);
+      setLookedUpApiKey(null);
       return;
     }
 
+    const requestId = ++lookupSequence.current;
     setLoading(true);
     setError(null);
+    setUsage(null);
+    setLogs(null);
     setLogsError(null);
+    setLookedUpApiKey(null);
     setTelegramLinkStatus("idle");
+    setTelegramDeepLink(null);
     try {
       const [response, logsResponse] = await Promise.all([
         fetch("/api/customer/usage", {
@@ -260,12 +283,15 @@ export default function CustomerUsagePageClient() {
         }),
       ]);
       const body = await response.json();
+      if (lookupSequence.current !== requestId) return;
       if (!response.ok) {
         throw new Error(body?.error || body?.message || "Key check failed.");
       }
 
       setUsage(body as CustomerUsageResponse);
+      setLookedUpApiKey(key);
       const logsBody = await logsResponse.json();
+      if (lookupSequence.current !== requestId) return;
       if (logsResponse.ok) {
         setLogs(logsBody as CustomerLogsResponse);
       } else {
@@ -273,21 +299,24 @@ export default function CustomerUsagePageClient() {
         setLogsError(logsBody?.error || logsBody?.message || "Could not load request logs.");
       }
     } catch (err) {
+      if (lookupSequence.current !== requestId) return;
       setUsage(null);
       setLogs(null);
+      setLookedUpApiKey(null);
       setError(err instanceof Error ? err.message : "Key check failed.");
     } finally {
-      setLoading(false);
+      if (lookupSequence.current === requestId) setLoading(false);
     }
   }
 
   async function connectTelegramAlerts() {
     if (telegramLinkStatus === "loading") return;
 
-    const key = apiKey.trim();
+    const key = lookedUpApiKey;
     if (!key) return;
 
     setTelegramLinkStatus("loading");
+    setTelegramDeepLink(null);
     try {
       const response = await fetch("/api/customer/telegram-link", {
         method: "POST",
@@ -302,8 +331,8 @@ export default function CustomerUsagePageClient() {
         throw new Error("Telegram link response was invalid.");
       }
 
-      window.open(deepLink, "_blank", "noopener,noreferrer");
-      setTelegramLinkStatus("success");
+      setTelegramDeepLink(deepLink);
+      setTelegramLinkStatus("ready");
     } catch {
       setTelegramLinkStatus("error");
     }
@@ -339,7 +368,7 @@ export default function CustomerUsagePageClient() {
               <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-text-muted" />
               <input
                 value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
+                onChange={(event) => handleApiKeyChange(event.target.value)}
                 type="password"
                 autoComplete="off"
                 spellCheck={false}
@@ -369,7 +398,7 @@ export default function CustomerUsagePageClient() {
           ) : null}
         </section>
 
-        {usage ? (
+        {usage && lookedUpApiKey ? (
           <>
             {usage.alerts && usage.alerts.length > 0 ? (
               <section className="grid gap-3">
@@ -401,42 +430,54 @@ export default function CustomerUsagePageClient() {
                       Get alerts at 90%, 95%, and 100% quota use, plus before your key expires.
                     </p>
                     {telegramLinkStatus === "error" ? (
-                      <p className="mt-2 text-sm text-red-600 dark:text-red-400" role="status">
+                      <p
+                        className="mt-2 text-sm text-red-600 dark:text-red-400"
+                        role="status"
+                        aria-live="polite"
+                      >
                         Unable to connect Telegram alerts.
                       </p>
                     ) : null}
-                    {telegramLinkStatus === "success" ? (
-                      <p className="mt-2 text-sm text-green-600 dark:text-green-400" role="status">
-                        Telegram alerts connected.
+                    {telegramLinkStatus === "ready" ? (
+                      <p
+                        className="mt-2 text-sm text-green-600 dark:text-green-400"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        Telegram link is ready. Open Telegram to finish connecting.
                       </p>
                     ) : null}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={connectTelegramAlerts}
-                  disabled={telegramLinkStatus === "loading"}
-                  className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 ${
-                    telegramLinkStatus === "error"
-                      ? "border border-red-500/30 bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:text-red-300"
-                      : telegramLinkStatus === "success"
-                        ? "bg-green-600 text-white hover:bg-green-700"
-                        : "bg-primary text-white hover:bg-primary-hover"
-                  }`}
-                >
-                  {telegramLinkStatus === "loading" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  ) : telegramLinkStatus === "success" ? (
+                {telegramLinkStatus === "ready" && telegramDeepLink ? (
+                  <a
+                    href={telegramDeepLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-green-600 px-4 text-sm font-semibold text-white outline-none transition hover:bg-green-700 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface active:scale-[0.98]"
+                  >
                     <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-                  ) : (
-                    <Send className="h-4 w-4" aria-hidden="true" />
-                  )}
-                  {telegramLinkStatus === "loading"
-                    ? "Connecting..."
-                    : telegramLinkStatus === "success"
-                      ? "Telegram connected"
-                      : "Connect Telegram alerts"}
-                </button>
+                    Open Telegram
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={connectTelegramAlerts}
+                    disabled={telegramLinkStatus === "loading"}
+                    className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 ${
+                      telegramLinkStatus === "error"
+                        ? "border border-red-500/30 bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:text-red-300"
+                        : "bg-primary text-white hover:bg-primary-hover"
+                    }`}
+                  >
+                    {telegramLinkStatus === "loading" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Send className="h-4 w-4" aria-hidden="true" />
+                    )}
+                    {telegramLinkStatus === "loading" ? "Connecting..." : "Connect Telegram alerts"}
+                  </button>
+                )}
               </div>
             </section>
 
