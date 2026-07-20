@@ -227,6 +227,8 @@ export default function CustomerUsagePageClient() {
   >("idle");
   const [telegramDeepLink, setTelegramDeepLink] = useState<string | null>(null);
   const lookupSequence = useRef(0);
+  const lookedUpApiKeyRef = useRef<string | null>(null);
+  const telegramRequestSequence = useRef(0);
 
   const keyStateClass = useMemo(() => {
     if (!usage) return "bg-bg-subtle text-text-muted";
@@ -238,6 +240,8 @@ export default function CustomerUsagePageClient() {
   function handleApiKeyChange(value: string) {
     // A displayed usage result is valid only for the exact key that was checked.
     lookupSequence.current += 1;
+    telegramRequestSequence.current += 1;
+    lookedUpApiKeyRef.current = null;
     setApiKey(value);
     setLoading(false);
     setError(null);
@@ -261,6 +265,8 @@ export default function CustomerUsagePageClient() {
     }
 
     const requestId = ++lookupSequence.current;
+    telegramRequestSequence.current += 1;
+    lookedUpApiKeyRef.current = null;
     setLoading(true);
     setError(null);
     setUsage(null);
@@ -289,6 +295,7 @@ export default function CustomerUsagePageClient() {
       }
 
       setUsage(body as CustomerUsageResponse);
+      lookedUpApiKeyRef.current = key;
       setLookedUpApiKey(key);
       const logsBody = await logsResponse.json();
       if (lookupSequence.current !== requestId) return;
@@ -302,6 +309,7 @@ export default function CustomerUsagePageClient() {
       if (lookupSequence.current !== requestId) return;
       setUsage(null);
       setLogs(null);
+      lookedUpApiKeyRef.current = null;
       setLookedUpApiKey(null);
       setError(err instanceof Error ? err.message : "Key check failed.");
     } finally {
@@ -315,6 +323,10 @@ export default function CustomerUsagePageClient() {
     const key = lookedUpApiKey;
     if (!key) return;
 
+    const requestId = ++telegramRequestSequence.current;
+    const isCurrentTelegramRequest = () =>
+      telegramRequestSequence.current === requestId && lookedUpApiKeyRef.current === key;
+
     setTelegramLinkStatus("loading");
     setTelegramDeepLink(null);
     try {
@@ -324,16 +336,19 @@ export default function CustomerUsagePageClient() {
         body: JSON.stringify({ apiKey: key }),
       });
       const body = await response.json();
+      if (!isCurrentTelegramRequest()) return;
       if (!response.ok) throw new Error("Telegram link request failed.");
 
       const deepLink = typeof body?.deepLink === "string" ? body.deepLink : "";
       if (!deepLink.startsWith(TELEGRAM_BOT_URL_PREFIX)) {
         throw new Error("Telegram link response was invalid.");
       }
+      if (!isCurrentTelegramRequest()) return;
 
       setTelegramDeepLink(deepLink);
       setTelegramLinkStatus("ready");
     } catch {
+      if (!isCurrentTelegramRequest()) return;
       setTelegramLinkStatus("error");
     }
   }

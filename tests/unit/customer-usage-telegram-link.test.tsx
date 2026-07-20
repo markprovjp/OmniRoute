@@ -15,6 +15,14 @@ function response(body: unknown, ok = true) {
   };
 }
 
+function deferred<T>() {
+  let resolve: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve: resolve! };
+}
+
 const usageResponse = {
   success: true,
   checkedAt: "2026-07-20T00:00:00.000Z",
@@ -45,6 +53,13 @@ const logsResponse = {
   logs: [],
   summary: { returned: 0, errors: 0, averageLatencyMs: null },
 };
+
+function usageResponseFor(prefix: string) {
+  return {
+    ...usageResponse,
+    key: { ...usageResponse.key, prefix },
+  };
+}
 
 const cleanupCallbacks: Array<() => Promise<void>> = [];
 
@@ -143,6 +158,71 @@ describe("customer usage Telegram alert linking", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ apiKey: KEY_A }),
     });
+  });
+
+  it("shows a generic error for a non-OK Telegram response without rendering a link", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response(usageResponse))
+      .mockResolvedValueOnce(response(logsResponse))
+      .mockResolvedValueOnce(response({ error: "claim unavailable" }, false));
+
+    const container = await renderCheckedUsage(fetchMock);
+    const connectButton = findButton(container, "Connect Telegram alerts");
+    if (!connectButton) throw new Error("Telegram button did not render.");
+    await click(connectButton);
+
+    expect(container.textContent).toContain("Unable to connect Telegram alerts.");
+    expect(container.querySelector("a")).toBeNull();
+  });
+
+  it("prevents duplicate Telegram claim requests while the first request is pending", async () => {
+    const pendingTelegramResponse = deferred<ReturnType<typeof response>>();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response(usageResponse))
+      .mockResolvedValueOnce(response(logsResponse))
+      .mockImplementationOnce(() => pendingTelegramResponse.promise);
+
+    const container = await renderCheckedUsage(fetchMock);
+    const connectButton = findButton(container, "Connect Telegram alerts");
+    if (!connectButton) throw new Error("Telegram button did not render.");
+    await click(connectButton);
+    await click(connectButton);
+
+    expect(connectButton.getAttribute("disabled")).not.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores a stale Telegram claim response after checking a different key", async () => {
+    const pendingTelegramResponse = deferred<ReturnType<typeof response>>();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response(usageResponseFor("qrouter_sk_checked_a")))
+      .mockResolvedValueOnce(response(logsResponse))
+      .mockImplementationOnce(() => pendingTelegramResponse.promise)
+      .mockResolvedValueOnce(response(usageResponseFor("qrouter_sk_checked_b")))
+      .mockResolvedValueOnce(response(logsResponse));
+
+    const container = await renderCheckedUsage(fetchMock);
+    const connectButton = findButton(container, "Connect Telegram alerts");
+    if (!connectButton) throw new Error("Telegram button did not render.");
+    await click(connectButton);
+
+    const input = container.querySelector("input");
+    const checkButton = findButton(container, "Check");
+    if (!input || !checkButton) throw new Error("Usage form did not render.");
+    await changeInput(input, KEY_B);
+    await click(checkButton);
+    expect(container.textContent).toContain("qrouter_sk_checked_b");
+
+    await act(async () => {
+      pendingTelegramResponse.resolve(response({ deepLink: TELEGRAM_DEEP_LINK }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain("Telegram link is ready.");
+    expect(container.querySelector("a")).toBeNull();
   });
 
   it("renders a safe user-activated Telegram link only after a validated response", async () => {

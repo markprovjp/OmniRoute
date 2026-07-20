@@ -86,3 +86,37 @@
 ## Remediation Commit
 
 - `b573a83e5` - `fix(usage): bind Telegram link to checked key`
+
+## Final Gate Remediation
+
+- Telegram claim responses now capture a request generation and the exact checked key. Input edits
+  and every new usage lookup invalidate that generation; after each Telegram response await, the
+  UI writes ready/error state only when both the generation and checked-key identity still match.
+- Added focused coverage for a deferred A claim resolved after editing and checking B, a non-OK
+  claim response, and duplicate clicks while the first claim is pending. The stale A response
+  cannot render an anchor under B.
+
+## Final Gate Verification
+
+- `D:\tools\node-v24.15.0-win-x64\node.exe node_modules\vitest\vitest.mjs run tests\unit\customer-usage-telegram-link.test.tsx --reporter=verbose`
+  - Passed: 1 test file and 6 tests.
+- `D:\tools\node-v24.15.0-win-x64\node.exe node_modules\prettier\bin\prettier.cjs --write src\app\usage\CustomerUsagePageClient.tsx tests\unit\customer-usage-telegram-link.test.tsx .superpowers\sdd\task-4-report.md`
+  - Passed; all three files were unchanged.
+- `D:\tools\node-v24.15.0-win-x64\node.exe node_modules\eslint\bin\eslint.js src\app\usage\CustomerUsagePageClient.tsx tests\unit\customer-usage-telegram-link.test.tsx`
+  - Passed with no output.
+- React Doctor detected the root Next.js project. Its branch-diff scan reported 0 errors and 2
+  warnings: the existing component's many coordinated state updates (`prefer-useReducer`) and an
+  unrelated sequential await in `src/lib/usage/apiKeyAlerts.ts`.
+- `git diff --check`
+  - Passed.
+
+## Final Gate Commit
+
+- `fix(usage): ignore stale Telegram claims`
+
+## Final Gate Self-Review
+
+- The safe, user-activated `noopener noreferrer` anchor remains gated by the exact approved
+  Telegram prefix, and the raw customer key is only present in the POST body.
+- A claim response cannot set ready, error, or deep-link state after its key was edited or any new
+  lookup started, including a successful lookup for a different key.
