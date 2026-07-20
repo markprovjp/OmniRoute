@@ -27,7 +27,7 @@ node --check "${CONTROLLER_SOURCE}"
 REPO_URL=${REPO_URL:-https://github.com/markprovjp/OmniRoute.git}
 DEPLOY_REF=${DEPLOY_REF:-main}
 LOCAL_HEALTH_URL=${LOCAL_HEALTH_URL:-http://127.0.0.1:20130/}
-PUBLIC_HEALTH_URL=${PUBLIC_HEALTH_URL:-https://qrouter.online/}
+PUBLIC_HEALTH_URL=${PUBLIC_HEALTH_URL:-https://customer.qrouter.online/}
 
 [[ "${REPO_URL}" =~ ^https://[^[:space:]]+$ ]] || {
   echo "REPO_URL must be a credential-free HTTPS URL." >&2
@@ -59,6 +59,7 @@ install -m 0755 "${CONTROLLER_SOURCE}" /usr/local/libexec/omniroute-deploy.mjs
 install -m 0644 "${SERVICE_SOURCE}" /etc/systemd/system/omniroute-deploy.service
 install -m 0644 "${TIMER_SOURCE}" /etc/systemd/system/omniroute-deploy.timer
 install -d -m 0700 /var/lib/omniroute-deploy
+install -d -m 0700 /var/lib/omniroute-deploy/docker-config
 install -d -m 0750 /opt/omniroute-releases
 
 if [[ ! -f "${CONFIG_PATH}" || ${FORCE_CONFIG:-0} == 1 ]]; then

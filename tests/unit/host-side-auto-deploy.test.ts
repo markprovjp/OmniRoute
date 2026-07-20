@@ -173,6 +173,8 @@ test("systemd owns deployment outside the app container and leaves polling disab
   assert.match(service, /ExecStart=\/usr\/bin\/flock[^\n]+omniroute-deploy\.mjs/);
   assert.match(service, /After=network-online\.target docker\.service/);
   assert.match(service, /TimeoutStartSec=45min/);
+  assert.match(service, /DOCKER_CONFIG=\/var\/lib\/omniroute-deploy\/docker-config/);
+  assert.match(installer, /install -d -m 0700 \/var\/lib\/omniroute-deploy\/docker-config/);
   assert.match(timer, /OnUnitInactiveSec=5min/);
   assert.doesNotMatch(installer, /^systemctl enable --now omniroute-deploy\.timer/m);
 });

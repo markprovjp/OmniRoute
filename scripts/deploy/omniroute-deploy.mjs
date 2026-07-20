@@ -127,7 +127,7 @@ export function loadDeployConfig(
     composeProjectName: raw.COMPOSE_PROJECT_NAME || "omniroute",
     composeFile: raw.COMPOSE_FILE || "docker-compose.prod.yml",
     localHealthUrl: raw.LOCAL_HEALTH_URL || "http://127.0.0.1:20130/",
-    publicHealthUrl: raw.PUBLIC_HEALTH_URL || "https://qrouter.online/",
+    publicHealthUrl: raw.PUBLIC_HEALTH_URL || "https://customer.qrouter.online/",
     healthTimeoutSeconds: parsePositiveNumber(
       raw.HEALTH_TIMEOUT_SECONDS,
       120,

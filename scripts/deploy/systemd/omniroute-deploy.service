@@ -8,6 +8,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 Environment=OMNIROUTE_DEPLOY_CONFIG=/etc/omniroute-deploy.env
+Environment=DOCKER_CONFIG=/var/lib/omniroute-deploy/docker-config
 ExecStart=/usr/bin/flock -n -E 75 /run/lock/omniroute-deploy.lock /usr/bin/node /usr/local/libexec/omniroute-deploy.mjs
 SuccessExitStatus=75
 TimeoutStartSec=45min
