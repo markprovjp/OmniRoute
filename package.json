@@ -107,7 +107,7 @@
     "typecheck:core": "tsc --pretty false -p tsconfig.typecheck-core.json",
     "typecheck:noimplicit:core": "tsc --pretty false -p tsconfig.typecheck-noimplicit-core.json",
     "backfill-aggregation": "node --import tsx src/scripts/backfillAggregation.ts",
-    "telegram:token-bot": "node --env-file-if-exists=.env --import tsx/esm scripts/telegram/token-bot.ts",
+    "telegram:token-bot": "node --env-file-if-exists=.env --env-file-if-exists=.env.telegram.local --import tsx/esm scripts/telegram/token-bot.ts",
     "env:sync": "node scripts/dev/sync-env.mjs",
     "test:integration": "cross-env DISABLE_SQLITE_AUTO_BACKUP=true node --import tsx --test --test-force-exit --test-concurrency=1 tests/integration/*.test.ts",
     "test:e2e": "node scripts/dev/run-playwright-tests.mjs test tests/e2e/*.spec.ts",

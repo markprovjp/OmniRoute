@@ -3,16 +3,24 @@ import { run, type RunnerHandle } from "@grammyjs/runner";
 import { Bot } from "grammy";
 import {
   acquireTelegramBotLease,
+  claimTelegramAlertDelivery,
   consumeTelegramLinkClaim,
   disconnectTelegramSubscription,
   getTelegramLastProcessedUpdateId,
   getTelegramSubscriptionByChat,
+  listActiveTelegramSubscriptions,
+  recordTelegramAlertDelivery,
   releaseTelegramBotLease,
   renewTelegramBotLease,
   setTelegramLastProcessedUpdateId,
   setTelegramMute,
 } from "@/lib/db/telegramBot";
 import { getApiKeyCustomerUsageById } from "@/lib/usage/apiKeyCustomerUsage";
+import {
+  startTelegramAlertMonitor,
+  type TelegramAlertMonitor,
+  type TelegramAlertMonitorDeps,
+} from "./alertMonitor";
 import { createTelegramTokenBot, type TelegramTokenBotDeps } from "./bot";
 
 const DEFAULT_TELEGRAM_BOT_USERNAME = "qrouter_token_bot";
@@ -30,6 +38,7 @@ export interface StartTelegramTokenBotOptions {
   env?: NodeJS.ProcessEnv;
   ownerId?: string;
   runBot?: typeof run;
+  startMonitor?: (deps: TelegramAlertMonitorDeps, intervalMs: number) => TelegramAlertMonitor;
   registerSignalHandlers?: boolean;
 }
 
@@ -56,7 +65,9 @@ export async function startTelegramTokenBot(
   const bot = options.bot ?? new Bot(token);
   const ownerId = options.ownerId ?? randomUUID();
   const runBot = options.runBot ?? run;
+  const startMonitor = options.startMonitor ?? startTelegramAlertMonitor;
   let runner: RunnerHandle | null = null;
+  let alertMonitor: TelegramAlertMonitor | null = null;
   let releaseLease = false;
   let renewalTimer: NodeJS.Timeout | null = null;
   let stopPromise: Promise<void> | null = null;
@@ -66,6 +77,7 @@ export async function startTelegramTokenBot(
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       if (renewalTimer) clearInterval(renewalTimer);
+      if (alertMonitor) await alertMonitor.stop();
       if (runner) await runner.stop();
       if (releaseLease) releaseTelegramBotLease(ownerId);
       removeSignalHandlers();
@@ -127,6 +139,21 @@ export async function startTelegramTokenBot(
       runner: { fetch: { allowed_updates: ["message", "callback_query"] }, silent: true },
       sink: { concurrency: 1 },
     });
+    alertMonitor = startMonitor(
+      {
+        listSubscriptions: listActiveTelegramSubscriptions,
+        getUsage: (apiKeyId, now) => getApiKeyCustomerUsageById(apiKeyId, { now }),
+        claimDelivery: claimTelegramAlertDelivery,
+        recordDelivery: recordTelegramAlertDelivery,
+        disconnect: disconnectTelegramSubscription,
+        sendMessage: (chatId, text) =>
+          bot.api.sendMessage(chatId, text, {
+            parse_mode: "HTML",
+            link_preview_options: { is_disabled: true },
+          }),
+      },
+      60_000
+    );
     renewalTimer = setInterval(() => {
       if (!renewTelegramBotLease(ownerId, new Date(), LEASE_MS)) void stop();
     }, LEASE_RENEWAL_MS);

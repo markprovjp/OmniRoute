@@ -6,6 +6,18 @@ export function escapeTelegramHtml(value: unknown): string {
     .replaceAll('"', "&quot;");
 }
 
+export const TELEGRAM_WELCOME_MESSAGE = [
+  "<b>QRouter Usage</b>",
+  "Bot cảnh báo hạn mức token và thời hạn API key.",
+  "",
+  "Để kết nối an toàn:",
+  "1. Mở trang Usage của QRouter.",
+  "2. Kiểm tra API key của bạn.",
+  "3. Chọn Kết nối cảnh báo Telegram.",
+  "",
+  "Không gửi API key trực tiếp vào Telegram.",
+].join("\n");
+
 export const TELEGRAM_HELP_MESSAGE = [
   "<b>QRouter Usage</b>",
   "/start - kết nối từ liên kết QRouter",

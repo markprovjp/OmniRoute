@@ -160,6 +160,22 @@ test("alert delivery records stable failure codes and attempt counts", async () 
     status: "retry",
     telegramMessageId: null,
   });
+  assert.equal(
+    telegramDb.claimTelegramAlertDelivery(
+      subscription.id,
+      "daily_tokens:90",
+      new Date("2026-07-19T00:00:59.999Z")
+    ),
+    null
+  );
+  assert.deepEqual(
+    telegramDb.claimTelegramAlertDelivery(
+      subscription.id,
+      "daily_tokens:90",
+      new Date("2026-07-19T00:01:00.000Z")
+    ),
+    { attemptCount: 1 }
+  );
 
   assert.equal(
     telegramDb.recordTelegramAlertDelivery(
@@ -227,6 +243,35 @@ test("alert delivery records stable failure codes and attempt counts", async () 
     status: "failed",
     telegramMessageId: null,
   });
+});
+
+test("stale reserved alert deliveries are reclaimable after a crashed sweep", async () => {
+  const key = await createKey();
+  const now = new Date("2026-07-19T00:00:00.000Z");
+  const claim = telegramDb.createTelegramLinkClaim(key.id, now);
+  const subscription = telegramDb.consumeTelegramLinkClaim(claim.token, "12345", now);
+  assert.ok(subscription);
+
+  assert.equal(
+    telegramDb.reserveTelegramAlertDelivery(subscription.id, "daily_tokens:90", now),
+    true
+  );
+  assert.equal(
+    telegramDb.claimTelegramAlertDelivery(
+      subscription.id,
+      "daily_tokens:90",
+      new Date("2026-07-19T00:04:59.999Z")
+    ),
+    null
+  );
+  assert.deepEqual(
+    telegramDb.claimTelegramAlertDelivery(
+      subscription.id,
+      "daily_tokens:90",
+      new Date("2026-07-19T00:05:00.000Z")
+    ),
+    { attemptCount: 0 }
+  );
 });
 
 test("the singleton bot state preserves an advancing cursor across lease operations", () => {

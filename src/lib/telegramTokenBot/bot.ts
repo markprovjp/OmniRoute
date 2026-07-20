@@ -7,6 +7,7 @@ import {
   TELEGRAM_HELP_MESSAGE,
   TELEGRAM_INVALID_CLAIM_MESSAGE,
   TELEGRAM_NOT_CONNECTED_MESSAGE,
+  TELEGRAM_WELCOME_MESSAGE,
 } from "./messages";
 
 const COMMAND_LIMIT_PER_MINUTE = 6;
@@ -129,12 +130,12 @@ export function createTelegramTokenBot(deps: TelegramTokenBotDeps): Bot {
         .get(chatId)
         ?.filter((time) => now().getTime() - time < INVALID_CLAIM_WINDOW_MS) ?? [];
     const token = ctx.match.trim();
-    if (!token || attempts.length >= INVALID_CLAIM_LIMIT) {
+    if (!token) {
+      await reply(ctx, TELEGRAM_WELCOME_MESSAGE);
+      return;
+    }
+    if (attempts.length >= INVALID_CLAIM_LIMIT) {
       invalidClaims.set(chatId, attempts);
-      if (attempts.length < INVALID_CLAIM_LIMIT) {
-        invalidClaims.set(chatId, [...attempts, now().getTime()]);
-        await reply(ctx, TELEGRAM_INVALID_CLAIM_MESSAGE);
-      }
       return;
     }
 

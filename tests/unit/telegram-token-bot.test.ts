@@ -116,6 +116,17 @@ function messages(calls: FakeTelegramCall[]) {
     .map((call) => String(call.payload.text));
 }
 
+test("plain start shows a friendly setup guide instead of an invalid-claim error", async () => {
+  const { bot, calls } = createSubject();
+
+  await bot.handleUpdate(commandUpdate(1, "/start") as never);
+
+  assert.equal(messages(calls).length, 1);
+  assert.match(messages(calls)[0] ?? "", /QRouter Usage/);
+  assert.match(messages(calls)[0] ?? "", /trang Usage/i);
+  assert.doesNotMatch(messages(calls)[0] ?? "", /Không thể kết nối/);
+});
+
 test("claims only in a private chat and replies generically for invalid claims", async () => {
   const { bot, calls, subscriptions } = createSubject();
 

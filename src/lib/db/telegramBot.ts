@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "crypto";
 import { getDbInstance, rowToCamel } from "./core";
 
 const CLAIM_TTL_MS = 10 * 60 * 1000;
+const ALERT_RESERVATION_STALE_MS = 5 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SUCCESSFUL_DELIVERY_RETENTION_DAYS = 30;
 const MAX_CLEANUP_BATCH_LIMIT = 1000;
@@ -37,6 +38,10 @@ export interface TelegramSubscription {
   mutedUntil: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TelegramAlertDeliveryClaim {
+  attemptCount: number;
 }
 
 export interface TelegramAlertDeliveryUpdate {
@@ -248,20 +253,60 @@ export function setTelegramMute(
   return result.changes === 1;
 }
 
+export function claimTelegramAlertDelivery(
+  subscriptionId: string,
+  dedupeKey: string,
+  now = new Date()
+): TelegramAlertDeliveryClaim | null {
+  const db = getDbInstance();
+  const nowMs = toMillis(now);
+  let claim: TelegramAlertDeliveryClaim | null = null;
+
+  db.immediate(() => {
+    const inserted = db
+      .prepare(
+        `INSERT OR IGNORE INTO telegram_alert_deliveries
+         (id, subscription_id, dedupe_key, status, created_at, updated_at)
+         VALUES (?, ?, ?, 'reserved', ?, ?)`
+      )
+      .run(randomUUID(), subscriptionId, dedupeKey, nowMs, nowMs);
+    if (inserted.changes === 1) {
+      claim = { attemptCount: 0 };
+      return;
+    }
+
+    const retried = db
+      .prepare(
+        `UPDATE telegram_alert_deliveries
+         SET status = 'reserved', retry_at = NULL, updated_at = ?
+         WHERE subscription_id = ? AND dedupe_key = ?
+           AND (
+             (status = 'retry' AND retry_at IS NOT NULL AND retry_at <= ?)
+             OR (status = 'reserved' AND updated_at <= ?)
+           )`
+      )
+      .run(nowMs, subscriptionId, dedupeKey, nowMs, nowMs - ALERT_RESERVATION_STALE_MS);
+    if (retried.changes !== 1) return;
+
+    const row = db
+      .prepare(
+        `SELECT attempt_count
+         FROM telegram_alert_deliveries
+         WHERE subscription_id = ? AND dedupe_key = ?`
+      )
+      .get(subscriptionId, dedupeKey) as { attempt_count: number } | undefined;
+    if (row) claim = { attemptCount: row.attempt_count };
+  });
+
+  return claim;
+}
+
 export function reserveTelegramAlertDelivery(
   subscriptionId: string,
   dedupeKey: string,
   now = new Date()
 ): boolean {
-  const nowMs = toMillis(now);
-  const result = getDbInstance()
-    .prepare(
-      `INSERT OR IGNORE INTO telegram_alert_deliveries
-       (id, subscription_id, dedupe_key, status, created_at, updated_at)
-       VALUES (?, ?, ?, 'reserved', ?, ?)`
-    )
-    .run(randomUUID(), subscriptionId, dedupeKey, nowMs, nowMs);
-  return result.changes === 1;
+  return claimTelegramAlertDelivery(subscriptionId, dedupeKey, now) !== null;
 }
 
 export function recordTelegramAlertDelivery(
