@@ -962,7 +962,11 @@ async function handleSingleModelChat(
         modelApiFormat: apiFormat,
         providerProfile,
         cachedSettings: runtimeOptions.cachedSettings,
-        skipUpstreamRetry: runtimeOptions.skipUpstreamRetry ?? false,
+        // Codex 429s include long-window usage_limit_reached responses. Retrying
+        // the same exhausted OAuth account adds 4s per account before rotation
+        // and becomes O(accounts × retries) under load. Rotate immediately;
+        // persisted per-scope cooldown prevents subsequent requests reusing it.
+        skipUpstreamRetry: provider === "codex" || (runtimeOptions.skipUpstreamRetry ?? false),
       });
       if (telemetry) telemetry.endPhase();
 

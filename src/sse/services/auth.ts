@@ -43,6 +43,7 @@ import {
   PROVIDER_ERROR_TYPES,
 } from "@omniroute/open-sse/services/errorClassifier.ts";
 import { getCodexModelScope } from "@omniroute/open-sse/executors/codex.ts";
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
 import { getProviderAlias, resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers";
 import { isModelExcludedByConnection } from "@/domain/connectionModelRules";
 import * as log from "../utils/logger";
@@ -1069,8 +1070,8 @@ export async function getProviderCredentials(
         log.warn(
           "AUTH",
           allBlockedByModelCooldown
-            ? `${provider} | all ${connections.length} active accounts cooling down for model ${requestedModel} (${formatRetryAfter(earliest)}) | lastErrorCode=${earliestConn?.errorCode}, lastError=${earliestConn?.lastError?.slice(0, 50)}`
-            : `${provider} | all ${connections.length} active accounts rate limited (${formatRetryAfter(earliest)}) | lastErrorCode=${earliestConn?.errorCode}, lastError=${earliestConn?.lastError?.slice(0, 50)}`
+            ? `${provider} | all ${connections.length} active accounts cooling down for model ${requestedModel} (${formatRetryAfter(earliest)}) | lastErrorCode=${earliestConn?.errorCode}`
+            : `${provider} | all ${connections.length} active accounts rate limited (${formatRetryAfter(earliest)}) | lastErrorCode=${earliestConn?.errorCode}`
         );
         return {
           allRateLimited: true,
@@ -1729,7 +1730,10 @@ export async function markAccountUnavailable(
       return { shouldFallback: true, cooldownMs: lockout.cooldownMs };
     }
 
-    const errorMsg = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
+    const errorMsg =
+      typeof errorText === "string"
+        ? sanitizeErrorMessage(errorText).slice(0, 100)
+        : "Provider error";
 
     // T09: Codex per-scope lockout (do not block the whole account globally).
     if (provider === "codex" && status === 429 && model && conn) {
@@ -1758,8 +1762,11 @@ export async function markAccountUnavailable(
         lockModel(provider, connectionId, model, reason || "unknown", scopeCooldownMs);
       }
 
-      if (status && errorMsg) {
-        console.error(`❌ ${provider} [${status}] (${scope}): ${errorMsg}`);
+      if (status) {
+        log.warn(
+          "AUTH",
+          `${provider} [${status}] ${scope} scope unavailable for ${Math.round(scopeCooldownMs / 1000)}s`
+        );
       }
 
       return { shouldFallback: true, cooldownMs: scopeCooldownMs };
@@ -1809,8 +1816,11 @@ export async function markAccountUnavailable(
       }
     }
 
-    if (provider && status && errorMsg) {
-      console.error(`❌ ${provider} [${status}]: ${errorMsg}`);
+    if (provider && status) {
+      log.warn(
+        "AUTH",
+        `${provider} [${status}] connection ${connectionId.slice(0, 8)} unavailable for ${Math.round(cooldownMs / 1000)}s`
+      );
     }
 
     return { shouldFallback: true, cooldownMs };

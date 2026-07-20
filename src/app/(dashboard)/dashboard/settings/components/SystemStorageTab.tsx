@@ -1884,8 +1884,8 @@ export default function SystemStorageTab() {
             <div>
               <p className="font-medium">{t("storageUsageTokenBuffer")}</p>
               <p className="text-sm text-text-muted mt-1">
-                Extra tokens added to reported usage to account for system prompt overhead. Set to 0
-                to report raw provider token counts. Default: 2000.
+                Extra tokens added only when usage must be estimated locally. Exact provider token
+                counts are never changed. Set to 0 to disable the estimate margin. Default: 2000.
               </p>
             </div>
           </div>

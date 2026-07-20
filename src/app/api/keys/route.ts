@@ -8,6 +8,7 @@ import { isApiKeyRevealEnabled, maskStoredApiKey } from "@/lib/apiKeyExposure";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { getApiKeyUsageSummaries } from "@/lib/usage/apiKeyUsageSummary";
 import { getApiKeyQuotaSnapshots } from "@/lib/usage/apiKeyQuotaLedger";
+import { getApiKeyCreditSummaries } from "@/lib/db/apiKeyCreditLedger";
 import * as log from "@/sse/utils/logger";
 
 function parsePagination(request: Request) {
@@ -42,15 +43,16 @@ export async function GET(request: Request) {
     const usageByKeyId = getApiKeyUsageSummaries(
       pagedKeys.map((key) => (typeof key.id === "string" ? key.id : ""))
     );
-    const quotaByKeyId = getApiKeyQuotaSnapshots(
-      pagedKeys.map((key) => (typeof key.id === "string" ? key.id : ""))
-    );
+    const keyIds = pagedKeys.map((key) => (typeof key.id === "string" ? key.id : ""));
+    const quotaByKeyId = getApiKeyQuotaSnapshots(keyIds);
+    const creditSummaryByKeyId = getApiKeyCreditSummaries(keyIds);
 
     return NextResponse.json({
       keys: pagedKeys.map((key) => ({
         ...key,
         usage: usageByKeyId[String(key.id)],
         quota: quotaByKeyId[String(key.id)],
+        creditSummary: creditSummaryByKeyId[String(key.id)],
       })),
       total: maskedKeys.length,
       allowKeyReveal: isApiKeyRevealEnabled(),
@@ -87,6 +89,12 @@ export async function POST(request) {
       maxRequestsPerDay,
       maxRequestsPerMinute,
       expiresAt,
+      imageGenerationEnabled,
+      imageMaxRequestsPerMinute,
+      imageMaxRequestsPerDay,
+      imageMaxConcurrent,
+      imageAllowHighQuality,
+      imageAllowedSizes,
     } = validation.data;
 
     // Always get machineId from server
@@ -103,6 +111,12 @@ export async function POST(request) {
       maxRequestsPerMinute: maxRequestsPerMinute ?? null,
       expiresAt: expiresAt ?? null,
       commercialKey: !isSystemKey,
+      imageGenerationEnabled,
+      imageMaxRequestsPerMinute,
+      imageMaxRequestsPerDay,
+      imageMaxConcurrent,
+      imageAllowHighQuality,
+      imageAllowedSizes,
     });
     if (noLog === true) {
       await updateApiKeyPermissions(apiKey.id, { noLog: true });
@@ -134,6 +148,12 @@ export async function POST(request) {
         maxRequestsPerDay: maxRequestsPerDay ?? null,
         maxRequestsPerMinute: maxRequestsPerMinute ?? null,
         expiresAt: apiKey.expiresAt,
+        imageGenerationEnabled: apiKey.imageGenerationEnabled,
+        imageMaxRequestsPerMinute: apiKey.imageMaxRequestsPerMinute,
+        imageMaxRequestsPerDay: apiKey.imageMaxRequestsPerDay,
+        imageMaxConcurrent: apiKey.imageMaxConcurrent,
+        imageAllowHighQuality: apiKey.imageAllowHighQuality,
+        imageAllowedSizes: apiKey.imageAllowedSizes,
       },
       { status: 201 }
     );

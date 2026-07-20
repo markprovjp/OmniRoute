@@ -9,11 +9,21 @@ import {
   ConfirmModal,
   CardSkeleton,
   Toggle,
+  OAuthModal,
 } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useTranslations } from "next-intl";
 import { getProviderDisplayName } from "@/lib/display/names";
-import { PREPAID_TOKEN_PACKAGES, type ApiKeyBillingMode } from "@/shared/constants/apiKeyBilling";
+import {
+  DEFAULT_PREPAID_TOKEN_PACKAGE,
+  PREPAID_TOKEN_PACKAGES,
+  TEST_TOKEN_CREDIT,
+  type ApiKeyBillingMode,
+} from "@/shared/constants/apiKeyBilling";
+import {
+  DEFAULT_IMAGE_GENERATION_POLICY,
+  IMAGE_GENERATION_ALLOWED_SIZES,
+} from "@/shared/constants/imageGeneration";
 
 // Constants for validation
 const MAX_KEY_NAME_LENGTH = 200;
@@ -140,11 +150,49 @@ interface ApiKey {
   tokenLimit?: number | null;
   dailyTokenLimit?: number | null;
   hourlyTokenLimit?: number | null;
+  imageGenerationEnabled?: boolean;
+  imageMaxRequestsPerMinute?: number;
+  imageMaxRequestsPerDay?: number;
+  imageMaxConcurrent?: number;
+  imageAllowHighQuality?: boolean;
+  imageAllowedSizes?: string[];
   tokenUsed?: number;
   commercialKey?: boolean;
+  creditSummary?: ApiKeyCreditSummary;
   usage?: KeyUsageStats;
   quota?: KeyQuotaSnapshot;
   createdAt: string;
+}
+
+interface ApiKeyCreditSummary {
+  outstandingAmountVnd: number;
+  outstandingTokenAmount: number;
+  openEntryCount: number;
+  totalCreditedTokens: number;
+}
+
+interface ApiKeyCreditEntry {
+  id: string;
+  tokenAmount: number;
+  amountDueVnd: number;
+  amountPaidVnd: number;
+  outstandingAmountVnd: number;
+  kind: "top_up" | "test_credit";
+  status: "unpaid" | "partial" | "paid" | "waived";
+  appliedTokens: boolean;
+  note: string | null;
+  dueAt: string | null;
+  paidAt: string | null;
+  createdAt: string;
+}
+
+interface ImageGenerationPolicyForm {
+  imageGenerationEnabled: boolean;
+  imageMaxRequestsPerMinute: number;
+  imageMaxRequestsPerDay: number;
+  imageMaxConcurrent: number;
+  imageAllowHighQuality: boolean;
+  imageAllowedSizes: string[];
 }
 
 interface KeyQuotaWindow {
@@ -286,16 +334,19 @@ export default function ApiManagerPageClient() {
   const [allConnections, setAllConnections] = useState<ProviderConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showCodexOAuthModal, setShowCodexOAuthModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [newCustomerName, setNewCustomerName] = useState("");
   const [newInternalNote, setNewInternalNote] = useState("");
   const [newBillingMode, setNewBillingMode] = useState<ApiKeyBillingMode>("prepaid");
-  const [newTokenLimit, setNewTokenLimit] = useState(String(PREPAID_TOKEN_PACKAGES[0]));
+  const [newTokenLimit, setNewTokenLimit] = useState(String(DEFAULT_PREPAID_TOKEN_PACKAGE));
   const [newRequestLimitDaily, setNewRequestLimitDaily] = useState("");
   const [newExpiresAt, setNewExpiresAt] = useState("");
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [editingKey, setEditingKey] = useState<ApiKey | null>(null);
+  const [creditKey, setCreditKey] = useState<ApiKey | null>(null);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
+  const [showCreditModal, setShowCreditModal] = useState(false);
   const [searchModel, setSearchModel] = useState("");
   const [pageError, setPageError] = useState<string | null>(null);
   const [pageNotice, setPageNotice] = useState<string | null>(null);
@@ -452,7 +503,7 @@ export default function ApiManagerPageClient() {
         setNewCustomerName("");
         setNewInternalNote("");
         setNewBillingMode("prepaid");
-        setNewTokenLimit(String(PREPAID_TOKEN_PACKAGES[0]));
+        setNewTokenLimit(String(DEFAULT_PREPAID_TOKEN_PACKAGE));
         setNewRequestLimitDaily("");
         setNewExpiresAt("");
         setShowAddModal(false);
@@ -558,6 +609,12 @@ export default function ApiManagerPageClient() {
     setShowPermissionsModal(true);
   };
 
+  const handleOpenCredits = (key: ApiKey) => {
+    if (!key || !key.id) return;
+    setCreditKey(key);
+    setShowCreditModal(true);
+  };
+
   const handleCopyExistingKey = async (keyId: string) => {
     if (!keyId) return;
 
@@ -643,7 +700,8 @@ export default function ApiManagerPageClient() {
     maxSessions: number,
     accessSchedule: AccessSchedule | null,
     rateLimits: Array<{ limit: number; window: number }> | null,
-    scopes: string[]
+    scopes: string[],
+    imagePolicy: ImageGenerationPolicyForm
   ) => {
     if (!editingKey || !editingKey.id) return;
 
@@ -699,6 +757,7 @@ export default function ApiManagerPageClient() {
           accessSchedule,
           rateLimits,
           scopes,
+          ...imagePolicy,
         }),
       });
 
@@ -941,6 +1000,13 @@ export default function ApiManagerPageClient() {
           </div>
           <div className="flex flex-wrap items-center gap-3 sm:justify-end">
             <Button
+              variant="secondary"
+              icon="person_add"
+              onClick={() => setShowCodexOAuthModal(true)}
+            >
+              {t("addCodexAccount")}
+            </Button>
+            <Button
               icon="add"
               onClick={() => {
                 setNameError(null);
@@ -1035,7 +1101,17 @@ export default function ApiManagerPageClient() {
               const hasSessionLimit = maxSessions > 0;
               const activeSessions = sessionCounts[key.id] || 0;
               const hasSchedule = key.accessSchedule?.enabled === true;
+              const imageGenerationEnabled = key.imageGenerationEnabled !== false;
+              const imageRequestsPerMinute =
+                key.imageMaxRequestsPerMinute ??
+                DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerMinute;
+              const imageRequestsPerDay =
+                key.imageMaxRequestsPerDay ?? DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerDay;
+              const imageConcurrent =
+                key.imageMaxConcurrent ?? DEFAULT_IMAGE_GENERATION_POLICY.maxConcurrent;
               const tokenUsed = typeof key.tokenUsed === "number" ? key.tokenUsed : 0;
+              const creditSummary = key.creditSummary;
+              const hasOutstandingDebt = (creditSummary?.outstandingAmountVnd || 0) > 0;
               const displayTokenUsed = Math.max(tokenUsed, stats?.totalTokens || 0);
               const tokenLimit = typeof key.tokenLimit === "number" ? key.tokenLimit : null;
               const totalRequests = stats?.totalRequests ?? 0;
@@ -1094,6 +1170,24 @@ export default function ApiManagerPageClient() {
                       >
                         {key.commercialKey ? t("sharedKey") : t("systemKey")}
                       </span>
+                      {hasOutstandingDebt && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenCredits(key)}
+                          className="mt-1 flex items-center gap-1 rounded border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-red-600 hover:bg-red-500/20 dark:text-red-300"
+                          title={t("outstandingDebtDetail", {
+                            amount: creditSummary!.outstandingAmountVnd.toLocaleString("vi-VN"),
+                            tokens: formatCompactTokens(creditSummary!.outstandingTokenAmount),
+                          })}
+                        >
+                          <span className="material-symbols-outlined text-[12px]">
+                            receipt_long
+                          </span>
+                          {t("outstandingDebt", {
+                            amount: creditSummary!.outstandingAmountVnd.toLocaleString("vi-VN"),
+                          })}
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="flex min-w-0 flex-col gap-1 lg:col-span-2">
@@ -1144,6 +1238,28 @@ export default function ApiManagerPageClient() {
                           {key.allowedConnections.length} conn
                         </button>
                       )}
+                      <button
+                        onClick={() => handleOpenPermissions(key)}
+                        className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                          imageGenerationEnabled
+                            ? "bg-fuchsia-500/10 text-fuchsia-600 hover:bg-fuchsia-500/20 dark:text-fuchsia-300"
+                            : "bg-black/5 text-text-muted hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10"
+                        }`}
+                        title={t("imagePolicySummary", {
+                          rpm: imageRequestsPerMinute,
+                          daily: imageRequestsPerDay,
+                          concurrent: imageConcurrent,
+                        })}
+                      >
+                        <span className="material-symbols-outlined text-[14px]">image</span>
+                        {imageGenerationEnabled
+                          ? t("imagePolicySummary", {
+                              rpm: imageRequestsPerMinute,
+                              daily: imageRequestsPerDay,
+                              concurrent: imageConcurrent,
+                            })
+                          : t("imageGenerationOff")}
+                      </button>
                       {noLogEnabled && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/10 text-violet-600 dark:text-violet-400 text-[11px] font-medium">
                           <span className="material-symbols-outlined text-[12px]">
@@ -1352,9 +1468,10 @@ export default function ApiManagerPageClient() {
                           onClick: () => handleToggleKey(key),
                         },
                         {
-                          icon: "add_circle",
-                          label: t("addTokensQuota"),
-                          onClick: () => handleOpenPermissions(key),
+                          icon: "receipt_long",
+                          label: t("manageTokenDebt"),
+                          tone: hasOutstandingDebt ? "warning" : "default",
+                          onClick: () => handleOpenCredits(key),
                         },
                         {
                           icon: "tune",
@@ -1394,7 +1511,7 @@ export default function ApiManagerPageClient() {
           setNewCustomerName("");
           setNewInternalNote("");
           setNewBillingMode("prepaid");
-          setNewTokenLimit(String(PREPAID_TOKEN_PACKAGES[0]));
+          setNewTokenLimit(String(DEFAULT_PREPAID_TOKEN_PACKAGE));
           setNewRequestLimitDaily("");
           setNewExpiresAt("");
           setNameError(null);
@@ -1460,7 +1577,7 @@ export default function ApiManagerPageClient() {
                       onClick={() => {
                         setNewBillingMode(option.value);
                         setNewTokenLimit(
-                          option.value === "prepaid" ? String(PREPAID_TOKEN_PACKAGES[0]) : ""
+                          option.value === "prepaid" ? String(DEFAULT_PREPAID_TOKEN_PACKAGE) : ""
                         );
                       }}
                       className={`flex min-h-24 items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
@@ -1592,7 +1709,7 @@ export default function ApiManagerPageClient() {
                 setNewCustomerName("");
                 setNewInternalNote("");
                 setNewBillingMode("prepaid");
-                setNewTokenLimit(String(PREPAID_TOKEN_PACKAGES[0]));
+                setNewTokenLimit(String(DEFAULT_PREPAID_TOKEN_PACKAGE));
                 setNewRequestLimitDaily("");
                 setNewExpiresAt("");
                 setNameError(null);
@@ -1647,6 +1764,18 @@ export default function ApiManagerPageClient() {
         </div>
       </Modal>
 
+      <OAuthModal
+        isOpen={showCodexOAuthModal}
+        provider="codex"
+        providerInfo={{ name: "Codex" }}
+        onClose={() => setShowCodexOAuthModal(false)}
+        onSuccess={() => {
+          setShowCodexOAuthModal(false);
+          setPageNotice(t("codexAccountAdded"));
+          void fetchConnections();
+        }}
+      />
+
       <ConfirmModal
         isOpen={pendingKeyAction !== null}
         onClose={() => setPendingKeyAction(null)}
@@ -1677,9 +1806,366 @@ export default function ApiManagerPageClient() {
           onSave={handleUpdatePermissions}
         />
       )}
+
+      {creditKey && (
+        <TokenCreditModal
+          key={creditKey.id}
+          isOpen={showCreditModal}
+          apiKey={creditKey}
+          onClose={() => {
+            setShowCreditModal(false);
+            setCreditKey(null);
+          }}
+          onChanged={fetchData}
+        />
+      )}
     </div>
   );
 }
+
+// -- Token credit and receivables modal --------------------------------------------------------------
+
+const TokenCreditHistory = memo(function TokenCreditHistory({
+  credits,
+  loading,
+  submitting,
+  onMarkPaid,
+}: {
+  credits: ApiKeyCreditEntry[];
+  loading: boolean;
+  submitting: boolean;
+  onMarkPaid: (creditId: string) => Promise<void>;
+}) {
+  const t = useTranslations("apiManager");
+  const tc = useTranslations("common");
+
+  return (
+    <section>
+      <h3 className="mb-3 text-sm font-semibold">{t("debtHistory")}</h3>
+      {loading ? (
+        <p className="text-sm text-text-muted">{tc("loading")}</p>
+      ) : credits.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-border p-4 text-sm text-text-muted">
+          {t("noDebtHistory")}
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {credits.map((credit) => (
+            <div
+              key={credit.id}
+              className="flex flex-col gap-3 rounded-lg border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold">+{formatCompactTokens(credit.tokenAmount)}</span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                      credit.status === "unpaid" || credit.status === "partial"
+                        ? "bg-red-500/10 text-red-600 dark:text-red-300"
+                        : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                    }`}
+                  >
+                    {t(`debtStatus_${credit.status}`)}
+                  </span>
+                  {!credit.appliedTokens && (
+                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600">
+                      {t("recordOnly")}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-sm text-text-muted">
+                  {credit.amountDueVnd.toLocaleString("vi-VN")} ₫ ·{" "}
+                  {new Date(credit.createdAt).toLocaleString("vi-VN", {
+                    timeZone: "Asia/Ho_Chi_Minh",
+                  })}
+                </p>
+                {credit.note && <p className="mt-1 text-xs text-text-muted">{credit.note}</p>}
+              </div>
+              {(credit.status === "unpaid" || credit.status === "partial") && (
+                <Button
+                  variant="secondary"
+                  onClick={() => onMarkPaid(credit.id)}
+                  loading={submitting}
+                >
+                  {t("bankReceivedClearDebt")}
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+});
+
+const TokenCreditModal = memo(function TokenCreditModal({
+  isOpen,
+  apiKey,
+  onClose,
+  onChanged,
+}: {
+  isOpen: boolean;
+  apiKey: ApiKey;
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const t = useTranslations("apiManager");
+  const tc = useTranslations("common");
+  const [credits, setCredits] = useState<ApiKeyCreditEntry[]>([]);
+  const [summary, setSummary] = useState<ApiKeyCreditSummary>(
+    apiKey.creditSummary || {
+      outstandingAmountVnd: 0,
+      outstandingTokenAmount: 0,
+      openEntryCount: 0,
+      totalCreditedTokens: 0,
+    }
+  );
+  const [tokenAmount, setTokenAmount] = useState(TEST_TOKEN_CREDIT);
+  const [currentTokenLimit, setCurrentTokenLimit] = useState(apiKey.tokenLimit || 0);
+  const [amountDueVnd, setAmountDueVnd] = useState("");
+  const [isAlreadyPaid, setIsAlreadyPaid] = useState(false);
+  const [applyTokens, setApplyTokens] = useState(true);
+  const [note, setNote] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isTestCredit = tokenAmount === TEST_TOKEN_CREDIT;
+
+  const loadCredits = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/keys/${encodeURIComponent(apiKey.id)}/credits`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || t("failedLoadDebt"));
+      setCredits(Array.isArray(payload.credits) ? payload.credits : []);
+      setSummary(payload.summary);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : t("failedLoadDebt"));
+    } finally {
+      setLoading(false);
+    }
+  }, [apiKey.id, t]);
+
+  useEffect(() => {
+    if (isOpen) void loadCredits();
+  }, [isOpen, loadCredits]);
+
+  useEffect(() => {
+    if (isTestCredit) {
+      setAmountDueVnd("");
+      setIsAlreadyPaid(true);
+    }
+  }, [isTestCredit]);
+
+  const createCredit = async () => {
+    const amount = Number(amountDueVnd || 0);
+    if (!isTestCredit && (!Number.isSafeInteger(amount) || amount < 0)) {
+      setError(t("invalidDebtAmount"));
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/keys/${encodeURIComponent(apiKey.id)}/credits`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tokenAmount,
+          amountDueVnd: isTestCredit ? 0 : amount,
+          paymentStatus: isAlreadyPaid ? "paid" : "unpaid",
+          applyTokens,
+          kind: isTestCredit ? "test_credit" : "top_up",
+          note: note.trim() ? sanitizeNote(note).slice(0, 500) : null,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok)
+        throw new Error(payload.error?.message || payload.error || t("failedSaveDebt"));
+
+      setCredits((current) => [payload.credit, ...current]);
+      setSummary(payload.summary);
+      if (typeof payload.tokenLimit === "number") setCurrentTokenLimit(payload.tokenLimit);
+      setNote("");
+      setAmountDueVnd("");
+      await onChanged();
+      await loadCredits();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : t("failedSaveDebt"));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const markPaid = useCallback(
+    async (creditId: string) => {
+      setSubmitting(true);
+      setError(null);
+      try {
+        const response = await fetch(
+          `/api/keys/${encodeURIComponent(apiKey.id)}/credits/${encodeURIComponent(creditId)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "mark_paid" }),
+          }
+        );
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || t("failedClearDebt"));
+        setCredits((current) =>
+          current.map((credit) => (credit.id === creditId ? payload.credit : credit))
+        );
+        setSummary(payload.summary);
+        await onChanged();
+        await loadCredits();
+      } catch (paymentError) {
+        setError(paymentError instanceof Error ? paymentError.message : t("failedClearDebt"));
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [apiKey.id, loadCredits, onChanged, t]
+  );
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      title={t("tokenDebtTitle", { name: apiKey.name })}
+      onClose={onClose}
+      size="full"
+    >
+      <div className="flex flex-col gap-5">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-lg border border-border bg-surface/30 p-3">
+            <p className="text-xs text-text-muted">{t("outstandingAmount")}</p>
+            <p className="mt-1 text-lg font-semibold text-red-600 dark:text-red-300">
+              {summary.outstandingAmountVnd.toLocaleString("vi-VN")} ₫
+            </p>
+          </div>
+          <div className="rounded-lg border border-border bg-surface/30 p-3">
+            <p className="text-xs text-text-muted">{t("unpaidTokenCredits")}</p>
+            <p className="mt-1 text-lg font-semibold">
+              {formatCompactTokens(summary.outstandingTokenAmount)}
+            </p>
+          </div>
+          <div className="rounded-lg border border-border bg-surface/30 p-3">
+            <p className="text-xs text-text-muted">{t("currentLifetimeLimit")}</p>
+            <p className="mt-1 text-lg font-semibold">{currentTokenLimit.toLocaleString()}</p>
+          </div>
+        </div>
+
+        <section className="rounded-lg border border-border p-4">
+          <h3 className="text-sm font-semibold">{t("recordTokenCredit")}</h3>
+          <p className="mt-1 text-xs text-text-muted">{t("recordTokenCreditDesc")}</p>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {PREPAID_TOKEN_PACKAGES.map((amount) => (
+              <button
+                key={amount}
+                type="button"
+                onClick={() => {
+                  setTokenAmount(amount);
+                  setIsAlreadyPaid(amount === TEST_TOKEN_CREDIT);
+                }}
+                className={`rounded-md border px-3 py-2 text-sm font-semibold transition-colors ${
+                  tokenAmount === amount
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border text-text-muted hover:border-primary/40"
+                }`}
+              >
+                +{formatCompactTokens(amount)}
+                {amount === TEST_TOKEN_CREDIT && (
+                  <span className="ml-1 text-[10px] font-normal">({t("testCredit")})</span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {!isTestCredit && (
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="credit-amount-vnd" className="mb-1.5 block text-sm font-medium">
+                  {t("amountDueVnd")}
+                </label>
+                <Input
+                  id="credit-amount-vnd"
+                  value={amountDueVnd}
+                  onChange={(event) => setAmountDueVnd(event.target.value.replace(/[^0-9]/g, ""))}
+                  inputMode="numeric"
+                  placeholder="2000000"
+                />
+                {amountDueVnd && (
+                  <p className="mt-1 text-xs text-text-muted">
+                    {Number(amountDueVnd).toLocaleString("vi-VN")} ₫
+                  </p>
+                )}
+              </div>
+              <div>
+                <label htmlFor="credit-note" className="mb-1.5 block text-sm font-medium">
+                  {t("debtNote")}
+                </label>
+                <Input
+                  id="credit-note"
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                  maxLength={500}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:gap-6">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={applyTokens}
+                onChange={(event) => setApplyTokens(event.target.checked)}
+                className="size-4 rounded border-border"
+              />
+              <span>{t("applyTokensNow")}</span>
+            </label>
+            {!isTestCredit && (
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={isAlreadyPaid}
+                  onChange={(event) => setIsAlreadyPaid(event.target.checked)}
+                  className="size-4 rounded border-border"
+                />
+                <span>{t("alreadyPaid")}</span>
+              </label>
+            )}
+          </div>
+          {!applyTokens && <p className="mt-2 text-xs text-amber-600">{t("recordDebtOnlyHint")}</p>}
+          {isTestCredit && (
+            <p className="mt-2 text-xs text-emerald-600">{t("testCreditFreeHint")}</p>
+          )}
+
+          <div className="mt-4">
+            <Button onClick={createCredit} loading={submitting}>
+              {isTestCredit ? t("addFreeTestCredit") : t("saveTokenCredit")}
+            </Button>
+          </div>
+        </section>
+
+        <TokenCreditHistory
+          credits={credits}
+          loading={loading}
+          submitting={submitting}
+          onMarkPaid={markPaid}
+        />
+
+        {error && <div className="rounded-lg bg-red-500/10 p-3 text-sm text-red-600">{error}</div>}
+        <div className="flex justify-end">
+          <Button variant="ghost" onClick={onClose}>
+            {tc("close")}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+});
 
 // -- Permissions Modal Component (Memoized for Performance) ------------------------------------------
 
@@ -1720,7 +2206,8 @@ const PermissionsModal = memo(function PermissionsModal({
     maxSessions: number,
     accessSchedule: AccessSchedule | null,
     rateLimits: Array<{ limit: number; window: number }> | null,
-    scopes: string[]
+    scopes: string[],
+    imagePolicy: ImageGenerationPolicyForm
   ) => void;
 }) {
   const t = useTranslations("apiManager");
@@ -1758,6 +2245,28 @@ const PermissionsModal = memo(function PermissionsModal({
     typeof apiKey?.maxRequestsPerDay === "number" && apiKey.maxRequestsPerDay > 0
       ? String(apiKey.maxRequestsPerDay)
       : ""
+  );
+  const [imageGenerationEnabled, setImageGenerationEnabled] = useState(
+    apiKey?.imageGenerationEnabled !== false
+  );
+  const [imageRequestsPerMinute, setImageRequestsPerMinute] = useState(
+    String(
+      apiKey?.imageMaxRequestsPerMinute ?? DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerMinute
+    )
+  );
+  const [imageRequestsPerDay, setImageRequestsPerDay] = useState(
+    String(apiKey?.imageMaxRequestsPerDay ?? DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerDay)
+  );
+  const [imageMaxConcurrent, setImageMaxConcurrent] = useState(
+    String(apiKey?.imageMaxConcurrent ?? DEFAULT_IMAGE_GENERATION_POLICY.maxConcurrent)
+  );
+  const [imageAllowHighQuality, setImageAllowHighQuality] = useState(
+    apiKey?.imageAllowHighQuality === true
+  );
+  const [imageAllowedSizes, setImageAllowedSizes] = useState<string[]>(
+    Array.isArray(apiKey?.imageAllowedSizes) && apiKey.imageAllowedSizes.length > 0
+      ? apiKey.imageAllowedSizes
+      : [...DEFAULT_IMAGE_GENERATION_POLICY.allowedSizes]
   );
   const [manageEnabled, setManageEnabled] = useState(
     Array.isArray(apiKey?.scopes) && apiKey.scopes.includes("manage")
@@ -1898,6 +2407,18 @@ const PermissionsModal = memo(function PermissionsModal({
           tz: scheduleTz,
         }
       : null;
+    if (imageGenerationEnabled && imageAllowedSizes.length === 0) {
+      setSaveError(t("imageAllowedSizeRequired"));
+      return;
+    }
+    const imagePolicy: ImageGenerationPolicyForm = {
+      imageGenerationEnabled,
+      imageMaxRequestsPerMinute: Math.max(0, Math.floor(Number(imageRequestsPerMinute) || 0)),
+      imageMaxRequestsPerDay: Math.max(0, Math.floor(Number(imageRequestsPerDay) || 0)),
+      imageMaxConcurrent: Math.max(1, Math.floor(Number(imageMaxConcurrent) || 1)),
+      imageAllowHighQuality,
+      imageAllowedSizes,
+    };
     onSave(
       keyName,
       allowAll ? [] : selectedModels,
@@ -1916,7 +2437,8 @@ const PermissionsModal = memo(function PermissionsModal({
       maxSessions,
       schedule,
       rateLimits.length > 0 ? rateLimits : null,
-      manageEnabled ? ["manage"] : []
+      manageEnabled ? ["manage"] : [],
+      imagePolicy
     );
   }, [
     onSave,
@@ -1936,6 +2458,12 @@ const PermissionsModal = memo(function PermissionsModal({
     dailyTokenLimit,
     hourlyTokenLimit,
     requestLimitDaily,
+    imageGenerationEnabled,
+    imageRequestsPerMinute,
+    imageRequestsPerDay,
+    imageMaxConcurrent,
+    imageAllowHighQuality,
+    imageAllowedSizes,
     maxSessions,
     manageEnabled,
     scheduleEnabled,
@@ -2354,24 +2882,9 @@ const PermissionsModal = memo(function PermissionsModal({
             <p className="text-xs text-text-muted mt-1">
               {t("usedTokens", { count: totalTokenUsed.toLocaleString() })}
             </p>
-            <div className="mt-2 grid grid-cols-2 gap-1.5">
-              {PREPAID_TOKEN_PACKAGES.map((amount) => (
-                <button
-                  key={amount}
-                  type="button"
-                  onClick={() =>
-                    setTokenLimit(
-                      formatNumberInput(
-                        addTokenAllowance(Number(tokenLimit || 0), totalTokenUsed, amount)
-                      )
-                    )
-                  }
-                  className="rounded-md border border-border px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-primary/40 hover:text-primary"
-                >
-                  +{formatCompactTokens(amount)}
-                </button>
-              ))}
-            </div>
+            <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+              {t("tokenLimitManualHint")}
+            </p>
           </div>
           <div>
             <label className="text-sm font-medium text-text-main mb-1.5 block">
@@ -2420,10 +2933,14 @@ const PermissionsModal = memo(function PermissionsModal({
             </p>
           </div>
           <div>
-            <label className="text-sm font-medium text-text-main mb-1.5 block">
+            <label
+              htmlFor="key-requests-per-day"
+              className="text-sm font-medium text-text-main mb-1.5 block"
+            >
               {t("requestsPerDay")}
             </label>
             <Input
+              id="key-requests-per-day"
               value={requestLimitDaily}
               onChange={(e) => setRequestLimitDaily(e.target.value.replace(/[^0-9]/g, ""))}
               placeholder={t("unlimited")}
@@ -2432,10 +2949,14 @@ const PermissionsModal = memo(function PermissionsModal({
             <p className="text-xs text-text-muted mt-1">{t("dailyRequestWindow")}</p>
           </div>
           <div className="sm:col-span-2">
-            <label className="text-sm font-medium text-text-main mb-1.5 block">
+            <label
+              htmlFor="key-internal-note"
+              className="text-sm font-medium text-text-main mb-1.5 block"
+            >
               {t("internalNote")}
             </label>
             <textarea
+              id="key-internal-note"
               value={internalNote}
               onChange={(e) => setInternalNote(e.target.value)}
               placeholder={t("operatorNote")}
@@ -2444,6 +2965,146 @@ const PermissionsModal = memo(function PermissionsModal({
             />
           </div>
         </div>
+
+        {/* Image generation policy */}
+        <section
+          aria-labelledby="image-generation-policy-heading"
+          className="flex flex-col gap-3 rounded-lg border border-border bg-surface/40 p-3"
+        >
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0 flex-1">
+              <h3
+                id="image-generation-policy-heading"
+                className="text-sm font-semibold text-text-main"
+              >
+                {t("imageGenerationPolicy")}
+              </h3>
+              <p className="mt-1 text-xs text-text-muted">
+                {t("imageGenerationPolicyDescription")}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={imageGenerationEnabled}
+              onClick={() => setImageGenerationEnabled((enabled) => !enabled)}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                imageGenerationEnabled
+                  ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                  : "border-border bg-black/5 text-text-muted dark:bg-white/5"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[14px]">image</span>
+              {imageGenerationEnabled ? tc("enabled") : tc("disabled")}
+            </button>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label
+                htmlFor="image-requests-per-minute"
+                className="mb-1.5 block text-xs font-medium text-text-main"
+              >
+                {t("imageRequestsPerMinute")}
+              </label>
+              <Input
+                id="image-requests-per-minute"
+                value={imageRequestsPerMinute}
+                onChange={(event) =>
+                  setImageRequestsPerMinute(event.target.value.replace(/[^0-9]/g, ""))
+                }
+                inputMode="numeric"
+                disabled={!imageGenerationEnabled}
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="image-requests-per-day"
+                className="mb-1.5 block text-xs font-medium text-text-main"
+              >
+                {t("imageRequestsPerDay")}
+              </label>
+              <Input
+                id="image-requests-per-day"
+                value={imageRequestsPerDay}
+                onChange={(event) =>
+                  setImageRequestsPerDay(event.target.value.replace(/[^0-9]/g, ""))
+                }
+                inputMode="numeric"
+                disabled={!imageGenerationEnabled}
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="image-max-concurrent"
+                className="mb-1.5 block text-xs font-medium text-text-main"
+              >
+                {t("imageMaxConcurrent")}
+              </label>
+              <Input
+                id="image-max-concurrent"
+                value={imageMaxConcurrent}
+                onChange={(event) =>
+                  setImageMaxConcurrent(event.target.value.replace(/[^0-9]/g, ""))
+                }
+                inputMode="numeric"
+                disabled={!imageGenerationEnabled}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-medium text-text-main">{t("imageAllowedSizes")}</p>
+            <div className="flex flex-wrap gap-2" role="group" aria-label={t("imageAllowedSizes")}>
+              {IMAGE_GENERATION_ALLOWED_SIZES.map((size) => {
+                const selected = imageAllowedSizes.includes(size);
+                return (
+                  <button
+                    key={size}
+                    type="button"
+                    aria-pressed={selected}
+                    disabled={!imageGenerationEnabled}
+                    onClick={() =>
+                      setImageAllowedSizes((current) =>
+                        current.includes(size)
+                          ? current.filter((candidate) => candidate !== size)
+                          : [...current, size]
+                      )
+                    }
+                    className={`rounded-md border px-2.5 py-1.5 font-mono text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      selected
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border text-text-muted hover:border-primary/40 hover:text-text-main"
+                    }`}
+                  >
+                    {size}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 p-2.5 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-medium text-text-main">{t("imageHighQuality")}</p>
+              <p className="mt-0.5 text-xs text-text-muted">{t("imageHighQualityDescription")}</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={imageAllowHighQuality}
+              disabled={!imageGenerationEnabled}
+              onClick={() => setImageAllowHighQuality((allowed) => !allowed)}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                imageAllowHighQuality
+                  ? "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                  : "border-border text-text-muted"
+              }`}
+            >
+              {imageAllowHighQuality ? tc("enabled") : tc("disabled")}
+            </button>
+          </div>
+        </section>
 
         {/* Expiration Date */}
         <div className="flex flex-col gap-2 p-3 rounded-lg border border-border bg-surface/40">
@@ -2735,6 +3396,7 @@ const PermissionsModal = memo(function PermissionsModal({
                         return (
                           <button
                             key={conn.id}
+                            type="button"
                             onClick={() => handleToggleConnection(conn.id)}
                             className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs transition-all ${
                               isSelected

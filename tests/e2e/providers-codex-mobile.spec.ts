@@ -28,6 +28,45 @@ const connections = [
   },
 ];
 
+test("API Manager exposes the shared Add Codex account OAuth flow", async ({ page }) => {
+  await page.route("**/api/keys", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: '{"keys":[]}' });
+  });
+  await page.route("**/v1/models", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: '{"data":[]}' });
+  });
+  await page.route("**/api/providers", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: '{"connections":[]}',
+    });
+  });
+  await page.route("**/api/oauth/codex/start-callback-server", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authUrl: "about:blank",
+        redirectUri: "http://localhost:1455/auth/callback",
+        codeVerifier: "test-verifier",
+      }),
+    });
+  });
+  await page.route("**/api/oauth/codex/poll-callback", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: '{"pending":true}',
+    });
+  });
+
+  await gotoDashboardRoute(page, "/dashboard/api-manager");
+  await page.getByRole("button", { name: /add codex account/i }).click();
+
+  await expect(page.getByRole("dialog", { name: /connect codex/i })).toBeVisible();
+});
+
 test("Codex connection controls remain usable without horizontal overflow on mobile", async ({
   page,
 }, testInfo) => {

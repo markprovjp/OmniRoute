@@ -24,9 +24,9 @@ export const COLORS = {
 };
 
 /**
- * Safety buffer added to reported token usage to prevent clients from hitting
- * context window limits. Accounts for overhead from system prompts,
- * tool definitions, and format translation that may not be reflected in raw usage.
+ * Safety buffer added only to estimated token usage to prevent clients from
+ * hitting context window limits. Provider-reported usage is authoritative and
+ * must pass through unchanged for protocol compatibility and correct billing.
  *
  * Configurable via:
  *   - Settings API / Dashboard: `usageTokenBuffer` (persisted in DB)
@@ -105,12 +105,13 @@ function getTimeString() {
 }
 
 /**
- * Add buffer tokens to usage to prevent context errors
+ * Add buffer tokens to estimated usage to prevent context errors.
+ * Provider-reported usage has no `estimated: true` marker and is returned unchanged.
  * @param {object} usage - Usage object (supported format)
- * @returns {object} Usage with buffer added
+ * @returns {object} Usage with buffer added only when estimated
  */
 export function addBufferToUsage(usage) {
-  if (!usage || typeof usage !== "object") return usage;
+  if (!usage || typeof usage !== "object" || usage.estimated !== true) return usage;
 
   const buffer = getBufferTokens();
   if (buffer === 0) return usage;
@@ -207,6 +208,7 @@ export function filterUsageForFormat(usage, targetFormat) {
     [FORMATS.OPENAI_RESPONSES]: [
       "input_tokens",
       "output_tokens",
+      "total_tokens",
       "input_tokens_details",
       "output_tokens_details",
       "estimated",

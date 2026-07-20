@@ -10,6 +10,7 @@ import { isPrepaidTokenPackage } from "@/shared/constants/apiKeyBilling";
 import { providerAllowsOptionalApiKey } from "@/shared/constants/providers";
 import { HIDEABLE_SIDEBAR_ITEM_IDS } from "@/shared/constants/sidebarVisibility";
 import { isForbiddenUpstreamHeaderName } from "@/shared/constants/upstreamHeaders";
+import { IMAGE_GENERATION_ALLOWED_SIZES } from "@/shared/constants/imageGeneration";
 
 function isHttpUrl(value: string): boolean {
   try {
@@ -448,6 +449,12 @@ export const createKeySchema = z
     maxRequestsPerDay: z.number().int().min(0).nullable().optional(),
     maxRequestsPerMinute: z.number().int().min(0).nullable().optional(),
     expiresAt: z.string().datetime().nullable().optional(),
+    imageGenerationEnabled: z.boolean().optional(),
+    imageMaxRequestsPerMinute: z.number().int().min(0).max(10_000).optional(),
+    imageMaxRequestsPerDay: z.number().int().min(0).max(1_000_000).optional(),
+    imageMaxConcurrent: z.number().int().min(1).max(100).optional(),
+    imageAllowHighQuality: z.boolean().optional(),
+    imageAllowedSizes: z.array(z.enum(IMAGE_GENERATION_ALLOWED_SIZES)).min(1).max(3).optional(),
   })
   .superRefine((value, context) => {
     if (value.billingMode !== "prepaid") return;
@@ -710,7 +717,78 @@ export const v1EmbeddingsSchema = z
   })
   .catchall(z.unknown());
 
-export const v1ImageGenerationSchema = z
+const imageSourceSchema = z.string().trim().min(1).max(15_000_000);
+const imageOptionStringSchema = z.string().trim().min(1).max(200);
+const imageMessageSchema = z.strictObject({
+  role: z.string().max(32).optional(),
+  content: z
+    .array(
+      z.strictObject({
+        type: z.string().max(32).optional(),
+        text: z.string().max(32_000).optional(),
+        image_url: z.strictObject({ url: imageSourceSchema }).optional(),
+      })
+    )
+    .max(20)
+    .optional(),
+});
+
+export const v1ImageGenerationSchema = z.strictObject({
+  model: modelIdSchema,
+  prompt: nonEmptyStringSchema.max(32_000).optional(),
+  n: z.literal(1).default(1),
+  size: z.enum(IMAGE_GENERATION_ALLOWED_SIZES).default("1024x1024"),
+  quality: z.enum(["auto", "low", "medium", "high", "standard", "hd"]).default("medium"),
+  response_format: z.enum(["url", "b64_json"]).optional(),
+  output_format: z.enum(["png", "jpeg", "webp"]).optional(),
+  output_compression: z.number().int().min(0).max(100).optional(),
+  background: z.enum(["auto", "opaque", "transparent"]).optional(),
+  timeout_ms: z.number().int().min(1_000).max(180_000).optional(),
+  poll_interval_ms: z.number().int().min(1_000).max(30_000).optional(),
+  partial_images: z.literal(0).optional(),
+  stream: z.literal(false).optional(),
+  image: imageSourceSchema.optional(),
+  image_url: imageSourceSchema.optional(),
+  imageUrls: z.array(imageSourceSchema).max(8).optional(),
+  image_urls: z.array(imageSourceSchema).max(8).optional(),
+  mask: imageSourceSchema.optional(),
+  mask_url: imageSourceSchema.optional(),
+  messages: z.array(imageMessageSchema).max(20).optional(),
+  aspect_ratio: z
+    .string()
+    .regex(/^\d{1,2}:\d{1,2}$/)
+    .optional(),
+  aspectRatio: z
+    .string()
+    .regex(/^\d{1,2}:\d{1,2}$/)
+    .optional(),
+  width: z.number().int().min(64).max(4096).optional(),
+  height: z.number().int().min(64).max(4096).optional(),
+  steps: z.number().int().min(1).max(100).optional(),
+  cfg_scale: z.number().min(0).max(30).optional(),
+  guidance: z.number().min(0).max(30).optional(),
+  control_strength: z.number().min(0).max(1).optional(),
+  creativity: z.number().min(0).max(1).optional(),
+  strength: z.number().min(0).max(1).optional(),
+  safety_tolerance: z.number().int().min(0).max(6).optional(),
+  seed: z.number().int().min(0).max(2_147_483_647).optional(),
+  negative_prompt: z.string().max(32_000).optional(),
+  search_prompt: z.string().max(32_000).optional(),
+  style: imageOptionStringSchema.optional(),
+  style_preset: imageOptionStringSchema.optional(),
+  sampler: imageOptionStringSchema.optional(),
+  resolution: imageOptionStringSchema.optional(),
+  sync_mode: z.boolean().optional(),
+  grow_mask: z.number().int().min(0).max(100).optional(),
+  left: z.number().int().min(0).max(4096).optional(),
+  right: z.number().int().min(0).max(4096).optional(),
+  top: z.number().int().min(0).max(4096).optional(),
+  bottom: z.number().int().min(0).max(4096).optional(),
+  up: z.number().int().min(0).max(4096).optional(),
+  down: z.number().int().min(0).max(4096).optional(),
+});
+
+export const v1MediaGenerationSchema = z
   .object({
     model: modelIdSchema,
     prompt: nonEmptyStringSchema.optional(),
@@ -1677,6 +1755,12 @@ export const updateKeyPermissionsSchema = z
       ])
       .optional(),
     scopes: z.array(z.string().trim().min(1).max(64)).max(16).optional(),
+    imageGenerationEnabled: z.boolean().optional(),
+    imageMaxRequestsPerMinute: z.number().int().min(0).max(10_000).optional(),
+    imageMaxRequestsPerDay: z.number().int().min(0).max(1_000_000).optional(),
+    imageMaxConcurrent: z.number().int().min(1).max(100).optional(),
+    imageAllowHighQuality: z.boolean().optional(),
+    imageAllowedSizes: z.array(z.enum(IMAGE_GENERATION_ALLOWED_SIZES)).min(1).max(3).optional(),
   })
   .superRefine((value, ctx) => {
     if (
@@ -1698,7 +1782,13 @@ export const updateKeyPermissionsSchema = z
       value.maxSessions === undefined &&
       value.accessSchedule === undefined &&
       value.rateLimits === undefined &&
-      value.scopes === undefined
+      value.scopes === undefined &&
+      value.imageGenerationEnabled === undefined &&
+      value.imageMaxRequestsPerMinute === undefined &&
+      value.imageMaxRequestsPerDay === undefined &&
+      value.imageMaxConcurrent === undefined &&
+      value.imageAllowHighQuality === undefined &&
+      value.imageAllowedSizes === undefined
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

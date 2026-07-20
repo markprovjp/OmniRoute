@@ -474,6 +474,22 @@ release(KEYS[7])
 return {1, "ok"}
 `;
 
+const REDIS_RECONCILE_SCRIPT = `
+-- Reconcile quota mirror from the authoritative SQLite ledger after Redis drift.
+for index = 1, 7 do
+  redis.call("SET", KEYS[index], tonumber(ARGV[index]) or 0)
+end
+local day_ttl = tonumber(ARGV[8]) or 0
+local hour_ttl = tonumber(ARGV[9]) or 0
+if day_ttl > 0 then
+  for index = 3, 5 do redis.call("EXPIRE", KEYS[index], day_ttl) end
+end
+if hour_ttl > 0 then
+  for index = 6, 7 do redis.call("EXPIRE", KEYS[index], hour_ttl) end
+end
+return {1, "reconciled"}
+`;
+
 function getRedisQuotaClient(): RedisQuotaClient | null {
   if (redisQuotaClientForTest !== undefined) return redisQuotaClientForTest;
   if (!isRedisEnabled()) return null;
@@ -626,6 +642,44 @@ async function syncRedisQuotaKeys(input: {
   }
 }
 
+async function reconcileRedisQuotaMirror(
+  apiKeyId: string,
+  specs: WindowSpec[],
+  now = new Date()
+): Promise<void> {
+  const redis = getRedisQuotaClient();
+  if (!redis) return;
+  const config = getApiKeyQuotaConfig(apiKeyId);
+  if (!config) return;
+
+  const day = specs.find((spec) => spec.type === "day");
+  const hour = specs.find((spec) => spec.type === "hour");
+  const dayRow = day ? readWindowSeed(apiKeyId, "day", day.key) : null;
+  const hourRow = hour ? readWindowSeed(apiKeyId, "hour", hour.key) : null;
+  const db = getDbInstance();
+  const args = [
+    config.tokenUsed,
+    getActiveReservedTokens(db, apiKeyId, now.toISOString()),
+    nonNegativeInt(dayRow?.used_tokens),
+    nonNegativeInt(dayRow?.reserved_tokens),
+    nonNegativeInt(dayRow?.request_count),
+    nonNegativeInt(hourRow?.used_tokens),
+    nonNegativeInt(hourRow?.reserved_tokens),
+    day ? secondsUntil(day.resetAt) : 60,
+    hour ? secondsUntil(hour.resetAt) : 60,
+  ];
+
+  try {
+    await redis.eval(REDIS_RECONCILE_SCRIPT, 7, ...redisQuotaKeys(apiKeyId, specs), ...args);
+  } catch (error) {
+    if (REDIS_QUOTA_REQUIRED) throw error;
+    console.warn(
+      "[ApiKeyQuotaLedger] Redis quota reconciliation failed; SQLite remains authoritative:",
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+}
+
 async function syncRedisReservation(input: {
   reservationId: string;
   mode: "settle" | "release";
@@ -671,12 +725,20 @@ export async function reserveApiKeyUsageDistributed(input: {
   const specs = getWindowSpecs(config, now);
   const redisRejection = await reserveRedisQuota({ config, specs, estimatedTokens });
   if (redisRejection) {
-    return {
-      allowed: false,
-      reason: redisRejection,
-      requestId,
-      quota: getApiKeyQuotaSnapshot(config.id, now),
-    };
+    // Redis is a distributed mirror, while SQLite owns the durable entitlement
+    // and reservation ledger. A stale Redis counter must never create a false
+    // 429. Verify against SQLite, then repair Redis from the committed state.
+    const sqliteResult = reserveApiKeyUsage({ ...input, requestId, estimatedTokens, now });
+    if (!sqliteResult.allowed) return sqliteResult;
+    try {
+      await reconcileRedisQuotaMirror(config.id, specs, now);
+    } catch (error) {
+      if (sqliteResult.reservationId) {
+        releaseApiKeyUsageReservation(sqliteResult.reservationId, "redis_reconcile_failed");
+      }
+      throw error;
+    }
+    return sqliteResult;
   }
   const result = reserveApiKeyUsage({ ...input, requestId, estimatedTokens, now });
   if (!result.allowed && getRedisQuotaClient()) {

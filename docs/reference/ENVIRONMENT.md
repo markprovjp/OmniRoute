@@ -315,28 +315,33 @@ detection above).
 
 ## 10. Internal Agent & MCP Integrations
 
-| Variable                                        | Default     | Source File                                                 | Description                                                                                                                   |
-| ----------------------------------------------- | ----------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `OMNIROUTE_BASE_URL`                            | auto-detect | `open-sse/mcp-server/server.ts`                             | Explicit URL for MCP/A2A tools to reach OmniRoute. Overrides localhost auto-detection.                                        |
-| `OMNIROUTE_API_KEY`                             | _(unset)_   | MCP/A2A modules                                             | API key for internal MCP tool and A2A skill calls.                                                                            |
-| `OMNIROUTE_API_KEY_ID`                          | _(unset)_   | `open-sse/mcp-server/audit.ts`                              | Key ID for MCP audit log attribution.                                                                                         |
-| `ROUTER_API_KEY`                                | _(unset)_   | Legacy                                                      | Legacy alias for `OMNIROUTE_API_KEY`.                                                                                         |
-| `OMNIROUTE_MCP_ENFORCE_SCOPES`                  | `false`     | `open-sse/mcp-server/server.ts`                             | Enforce scope-based access control on MCP tool calls.                                                                         |
-| `OMNIROUTE_MCP_SCOPES`                          | _(all)_     | `open-sse/mcp-server/server.ts`                             | Comma-separated scopes: `admin`, `combos`, `health`, `models`, `routing`, `budget`, `metrics`, `pricing`, `memory`, `skills`. |
-| `OMNIROUTE_MCP_COMPRESS_DESCRIPTIONS`           | enabled     | `open-sse/mcp-server/descriptionCompressor.ts`              | Compress MCP tool descriptions before serializing the manifest. Disable values: `0`, `false`, `off`.                          |
-| `OMNIROUTE_MCP_DESCRIPTION_COMPRESSION`         | `rtk`       | `open-sse/mcp-server/descriptionCompressor.ts`              | Compression algorithm/profile. Disable values: `0`, `false`, `off`.                                                           |
-| `MODEL_SYNC_INTERVAL_HOURS`                     | `24`        | `src/shared/services/modelSyncScheduler.ts`                 | Model catalog sync interval in hours.                                                                                         |
-| `PROVIDER_LIMITS_SYNC_INTERVAL_MINUTES`         | `70`        | `src/server-init.ts`                                        | Provider rate-limit and quota polling interval.                                                                               |
-| `OMNIROUTE_DISABLE_BACKGROUND_SERVICES`         | `false`     | `src/instrumentation-node.ts`                               | Disable all background services (sync, pricing, model refresh). Useful for CI/test.                                           |
-| `OMNIROUTE_ENABLE_RUNTIME_BACKGROUND_TASKS`     | _(unset)_   | `src/lib/config/runtimeSettings.ts`                         | Force background tasks on under automated test detection. Set `1` to override the test heuristic.                             |
-| `OMNIROUTE_BUDGET_RESET_JOB_INTERVAL_MS`        | `600000`    | `src/lib/jobs/budgetResetJob.ts`                            | Budget reset check cadence (ms). Floor `10000`.                                                                               |
-| `OMNIROUTE_REASONING_CACHE_CLEANUP_INTERVAL_MS` | `1800000`   | `src/lib/jobs/reasoningCacheCleanupJob.ts`                  | Reasoning cache cleanup cadence (ms). Floor `60000`.                                                                          |
-| `OMNIROUTE_CONFIG_HOT_RELOAD_MS`                | `5000`      | `src/lib/config/hotReload.ts`                               | Polling interval (ms) for config hot-reload. Lower than `1000` is rejected.                                                   |
-| `OMNIROUTE_DISABLE_REDIS_AUTH_CACHE`            | _(enabled)_ | `src/lib/db/apiKeys.ts`                                     | Set `1` to bypass the Redis-backed API-key auth cache (forces DB reads).                                                      |
-| `OMNIROUTE_RTK_TRUST_PROJECT_FILTERS`           | `0`         | `open-sse/services/compression/engines/rtk/filterLoader.ts` | Trust user-managed RTK project filter rules without strict signature checks.                                                  |
-| `OMNIROUTE_BOOTSTRAPPED`                        | `false`     | `src/app/(dashboard)/dashboard/page.tsx`                    | Set `true` by bootstrap script after initial setup. Controls setup wizard visibility.                                         |
-| `OMNIROUTE_ALLOW_BODY_PROJECT_OVERRIDE`         | `0`         | `open-sse/executors/antigravity.ts`                         | Escape hatch: allow request body to override the Antigravity project field.                                                   |
-| `ANTIGRAVITY_CREDITS`                           | _(unset)_   | `open-sse/services/antigravityCredits.ts`                   | Override Antigravity's advertised remaining credits (testing / forced values).                                                |
+| Variable                                           | Default     | Source File                                                 | Description                                                                                                                   |
+| -------------------------------------------------- | ----------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `OMNIROUTE_BASE_URL`                               | auto-detect | `open-sse/mcp-server/server.ts`                             | Explicit URL for MCP/A2A tools to reach OmniRoute. Overrides localhost auto-detection.                                        |
+| `OMNIROUTE_API_KEY`                                | _(unset)_   | MCP/A2A modules                                             | API key for internal MCP tool and A2A skill calls.                                                                            |
+| `OMNIROUTE_API_KEY_ID`                             | _(unset)_   | `open-sse/mcp-server/audit.ts`                              | Key ID for MCP audit log attribution.                                                                                         |
+| `ROUTER_API_KEY`                                   | _(unset)_   | Legacy                                                      | Legacy alias for `OMNIROUTE_API_KEY`.                                                                                         |
+| `OMNIROUTE_MCP_ENFORCE_SCOPES`                     | `false`     | `open-sse/mcp-server/server.ts`                             | Enforce scope-based access control on MCP tool calls.                                                                         |
+| `OMNIROUTE_MCP_SCOPES`                             | _(all)_     | `open-sse/mcp-server/server.ts`                             | Comma-separated scopes: `admin`, `combos`, `health`, `models`, `routing`, `budget`, `metrics`, `pricing`, `memory`, `skills`. |
+| `OMNIROUTE_MCP_COMPRESS_DESCRIPTIONS`              | enabled     | `open-sse/mcp-server/descriptionCompressor.ts`              | Compress MCP tool descriptions before serializing the manifest. Disable values: `0`, `false`, `off`.                          |
+| `OMNIROUTE_MCP_DESCRIPTION_COMPRESSION`            | `rtk`       | `open-sse/mcp-server/descriptionCompressor.ts`              | Compression algorithm/profile. Disable values: `0`, `false`, `off`.                                                           |
+| `MODEL_SYNC_INTERVAL_HOURS`                        | `24`        | `src/shared/services/modelSyncScheduler.ts`                 | Model catalog sync interval in hours.                                                                                         |
+| `PROVIDER_LIMITS_SYNC_INTERVAL_MINUTES`            | `70`        | `src/server-init.ts`                                        | Provider rate-limit and quota polling interval.                                                                               |
+| `PROVIDER_LIMITS_REFRESH_GLOBAL_CONCURRENCY`       | `32`        | `src/lib/usage/providerLimits.ts`                           | Maximum simultaneous quota refresh calls across all providers (`1..256`).                                                     |
+| `PROVIDER_LIMITS_REFRESH_PER_PROVIDER_CONCURRENCY` | `5`         | `src/lib/usage/providerLimits.ts`                           | Maximum simultaneous quota refresh calls to one provider (`1..64`).                                                           |
+| `PROVIDER_LIMITS_REFRESH_BATCH_SIZE`               | `25`        | `src/lib/usage/providerLimits.ts`                           | Successful quota cache entries per SQLite batch transaction (`1..1000`).                                                      |
+| `PROVIDER_LIMITS_REFRESH_FLUSH_INTERVAL_MS`        | `100`       | `src/lib/usage/providerLimits.ts`                           | Maximum delay before a partial quota-cache batch is flushed (`10..60000` ms).                                                 |
+| `PROVIDER_LIMITS_REFRESH_JOB_TTL_MS`               | `600000`    | `src/lib/usage/providerLimitsRefreshJobs.ts`                | Retention for completed process-local refresh jobs (`1..86400000` ms).                                                        |
+| `OMNIROUTE_DISABLE_BACKGROUND_SERVICES`            | `false`     | `src/instrumentation-node.ts`                               | Disable all background services (sync, pricing, model refresh). Useful for CI/test.                                           |
+| `OMNIROUTE_ENABLE_RUNTIME_BACKGROUND_TASKS`        | _(unset)_   | `src/lib/config/runtimeSettings.ts`                         | Force background tasks on under automated test detection. Set `1` to override the test heuristic.                             |
+| `OMNIROUTE_BUDGET_RESET_JOB_INTERVAL_MS`           | `600000`    | `src/lib/jobs/budgetResetJob.ts`                            | Budget reset check cadence (ms). Floor `10000`.                                                                               |
+| `OMNIROUTE_REASONING_CACHE_CLEANUP_INTERVAL_MS`    | `1800000`   | `src/lib/jobs/reasoningCacheCleanupJob.ts`                  | Reasoning cache cleanup cadence (ms). Floor `60000`.                                                                          |
+| `OMNIROUTE_CONFIG_HOT_RELOAD_MS`                   | `5000`      | `src/lib/config/hotReload.ts`                               | Polling interval (ms) for config hot-reload. Lower than `1000` is rejected.                                                   |
+| `OMNIROUTE_DISABLE_REDIS_AUTH_CACHE`               | _(enabled)_ | `src/lib/db/apiKeys.ts`                                     | Set `1` to bypass the Redis-backed API-key auth cache (forces DB reads).                                                      |
+| `OMNIROUTE_RTK_TRUST_PROJECT_FILTERS`              | `0`         | `open-sse/services/compression/engines/rtk/filterLoader.ts` | Trust user-managed RTK project filter rules without strict signature checks.                                                  |
+| `OMNIROUTE_BOOTSTRAPPED`                           | `false`     | `src/app/(dashboard)/dashboard/page.tsx`                    | Set `true` by bootstrap script after initial setup. Controls setup wizard visibility.                                         |
+| `OMNIROUTE_ALLOW_BODY_PROJECT_OVERRIDE`            | `0`         | `open-sse/executors/antigravity.ts`                         | Escape hatch: allow request body to override the Antigravity project field.                                                   |
+| `ANTIGRAVITY_CREDITS`                              | _(unset)_   | `open-sse/services/antigravityCredits.ts`                   | Override Antigravity's advertised remaining credits (testing / forced values).                                                |
 
 ### OAuth CLI Bridge (Internal)
 
@@ -584,18 +589,18 @@ The logging system writes to both stdout and rotated log files. All configuratio
 
 ## 17. Memory Optimization
 
-| Variable                   | Default                         | Description                                                            |
-| -------------------------- | ------------------------------- | ---------------------------------------------------------------------- |
-| `OMNIROUTE_MEMORY_MB`      | `256` (Docker) / system default | V8 heap limit. Sets `--max-old-space-size`.                            |
-| `PROMPT_CACHE_MAX_SIZE`    | `50`                            | Max cached system prompt entries.                                      |
-| `PROMPT_CACHE_MAX_BYTES`   | `2097152` (2 MB)                | Max total prompt cache size.                                           |
-| `PROMPT_CACHE_TTL_MS`      | `300000` (5 min)                | Prompt cache entry TTL.                                                |
-| `SEMANTIC_CACHE_MAX_SIZE`  | `100`                           | Max cached temperature=0 responses.                                    |
-| `SEMANTIC_CACHE_MAX_BYTES` | `4194304` (4 MB)                | Max total semantic cache size.                                         |
-| `SEMANTIC_CACHE_TTL_MS`    | `1800000` (30 min)              | Semantic cache entry TTL.                                              |
-| `STREAM_HISTORY_MAX`       | `50`                            | Max recent stream events in the Dashboard live view buffer.            |
-| `CONTEXT_LENGTH_DEFAULT`   | `128000`                        | Global fallback max context length for models without explicit config. |
-| `USAGE_TOKEN_BUFFER`       | `100`                           | Extra token headroom reserved when tracking usage quotas.              |
+| Variable                   | Default                         | Description                                                                                           |
+| -------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `OMNIROUTE_MEMORY_MB`      | `256` (Docker) / system default | V8 heap limit. Sets `--max-old-space-size`.                                                           |
+| `PROMPT_CACHE_MAX_SIZE`    | `50`                            | Max cached system prompt entries.                                                                     |
+| `PROMPT_CACHE_MAX_BYTES`   | `2097152` (2 MB)                | Max total prompt cache size.                                                                          |
+| `PROMPT_CACHE_TTL_MS`      | `300000` (5 min)                | Prompt cache entry TTL.                                                                               |
+| `SEMANTIC_CACHE_MAX_SIZE`  | `100`                           | Max cached temperature=0 responses.                                                                   |
+| `SEMANTIC_CACHE_MAX_BYTES` | `4194304` (4 MB)                | Max total semantic cache size.                                                                        |
+| `SEMANTIC_CACHE_TTL_MS`    | `1800000` (30 min)              | Semantic cache entry TTL.                                                                             |
+| `STREAM_HISTORY_MAX`       | `50`                            | Max recent stream events in the Dashboard live view buffer.                                           |
+| `CONTEXT_LENGTH_DEFAULT`   | `128000`                        | Global fallback max context length for models without explicit config.                                |
+| `USAGE_TOKEN_BUFFER`       | `2000`                          | Extra headroom applied only to locally estimated usage; exact provider-reported counts are unchanged. |
 
 ### Compression
 
@@ -641,6 +646,7 @@ Automatic model pricing data synchronization from external sources.
 | Variable                                  | Default            | Source File                                                           | Description                                                                           |
 | ----------------------------------------- | ------------------ | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | `OPENROUTER_CATALOG_TTL_MS`               | `86400000` (24h)   | `src/lib/catalog/openrouterCatalog.ts`                                | OpenRouter model catalog cache TTL.                                                   |
+| `IMAGE_GENERATION_GLOBAL_MAX_CONCURRENT`  | `8`                | `src/lib/db/imageGenerationEvents.ts`                                 | Maximum running image generation/edit operations across all managed API keys.         |
 | `NANOBANANA_POLL_TIMEOUT_MS`              | `360000`           | `open-sse/handlers/imageGeneration.ts`                                | Max wait for NanoBanana image generation jobs.                                        |
 | `NANOBANANA_POLL_INTERVAL_MS`             | `2500`             | `open-sse/handlers/imageGeneration.ts`                                | NanoBanana job polling frequency.                                                     |
 | `AWS_REGION`                              | _(unset)_          | `src/lib/providers/validation.ts`, `open-sse/handlers/audioSpeech.ts` | Region used to construct AWS Bedrock endpoints (Kiro, audio).                         |

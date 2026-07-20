@@ -2,33 +2,32 @@ import {
   getLastProviderLimitsAutoSyncTime,
   getProviderLimitsSyncIntervalMinutes,
   getProviderLimitsSyncIntervalMs,
-  syncAllProviderLimits,
 } from "@/lib/usage/providerLimits";
+import {
+  startProviderLimitsRefreshJob,
+  waitForProviderLimitsRefreshJob,
+} from "@/lib/usage/providerLimitsRefreshJobs";
 
 const STARTUP_DELAY_MS = 5_000;
 
 let schedulerTimer: NodeJS.Timeout | null = null;
 let startupTimer: NodeJS.Timeout | null = null;
-let isRunning = false;
 
 async function runProviderLimitsSyncCycle(): Promise<void> {
-  if (isRunning) {
-    console.log("[ProviderLimitsSync] Skipping cycle — previous run still in progress");
-    return;
-  }
-
-  isRunning = true;
   const start = Date.now();
 
   try {
-    const result = await syncAllProviderLimits({ source: "scheduled" });
+    const started = await startProviderLimitsRefreshJob("scheduled");
+    const result = await waitForProviderLimitsRefreshJob(started.job.id);
+    if (!result) {
+      console.warn("[ProviderLimitsSync] Refresh job disappeared before completion");
+      return;
+    }
     console.log(
-      `[ProviderLimitsSync] Cycle complete: ${result.succeeded}/${result.total} synced in ${Date.now() - start}ms`
+      `[ProviderLimitsSync] Job ${result.id.slice(0, 8)} complete: ${result.succeeded}/${result.total} synced in ${Date.now() - start}ms`
     );
   } catch (error) {
     console.warn("[ProviderLimitsSync] Cycle failed:", (error as Error).message);
-  } finally {
-    isRunning = false;
   }
 }
 

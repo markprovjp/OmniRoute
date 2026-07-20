@@ -85,7 +85,11 @@ import {
   getModelUpstreamExtraHeaders,
   getUpstreamProxyConfig,
 } from "@/lib/localDb";
-import { getProviderCredentials, extractSessionAffinityKey } from "@/sse/services/auth";
+import {
+  getProviderCredentials,
+  extractSessionAffinityKey,
+  markAccountUnavailable,
+} from "@/sse/services/auth";
 import { deleteSessionAccountAffinity } from "@/lib/db/sessionAccountAffinity";
 import { getExecutor } from "../executors/index.ts";
 import { getCacheControlSettings } from "@/lib/cacheControlSettings";
@@ -1391,7 +1395,8 @@ export async function handleChatCore({
     headers: Headers | Record<string, string> | null,
     status = 0
   ) => {
-    if (provider !== "codex" || !connectionId || !headers) return;
+    const activeConnectionId = credentials?.connectionId || connectionId;
+    if (provider !== "codex" || !activeConnectionId || !headers) return;
 
     try {
       const quota = parseCodexQuotaHeaders(headers as Headers);
@@ -1445,12 +1450,10 @@ export async function handleChatCore({
 
         // Invalidate the preflight cache for this connection so the next
         // isModelAvailable check fetches fresh quota data.
-        if (connectionId) {
-          invalidateCodexQuotaCache(connectionId);
-        }
+        invalidateCodexQuotaCache(activeConnectionId);
       }
 
-      await updateProviderConnection(connectionId, {
+      await updateProviderConnection(activeConnectionId, {
         providerSpecificData: nextProviderData,
       });
 
@@ -3319,6 +3322,10 @@ export async function handleChatCore({
                 attempts < maxAttempts - 1
               ) {
                 const failedConnectionId = credentials?.connectionId || connectionId;
+                const bodyPeek = await res.response
+                  .clone()
+                  .text()
+                  .catch(() => "");
                 const retryAfterHeader = res.response.headers.get("retry-after");
                 const retryAfterMs = retryAfterHeader
                   ? Number.parseFloat(retryAfterHeader) * 1000
@@ -3329,17 +3336,18 @@ export async function handleChatCore({
                   `429 on connection ${String(failedConnectionId).slice(0, 8)} (attempt ${attempts + 1}/${maxAttempts}), rotating account`
                 );
 
-                // Mark current connection as rate-limited in the DB
+                // Use the canonical fallback classifier so usage_limit_reached
+                // persists its exact reset metadata per Codex model scope. A
+                // generic 60s lock here would retry a multi-day exhausted
+                // account on every request and create an account-scan storm.
                 if (failedConnectionId) {
-                  const rateLimitedUntil = new Date(
-                    Date.now() + (retryAfterMs || 60_000)
-                  ).toISOString();
-                  updateProviderConnection(String(failedConnectionId), {
-                    rateLimitedUntil,
-                    testStatus: "unavailable",
-                    lastError: "429 rate limited — codex account rotation",
-                    errorCode: 429,
-                  }).catch(() => {});
+                  await markAccountUnavailable(
+                    String(failedConnectionId),
+                    429,
+                    bodyPeek,
+                    "codex",
+                    modelToCall
+                  );
                   if (!codexExcludedIds.includes(String(failedConnectionId))) {
                     codexExcludedIds.push(String(failedConnectionId));
                   }
@@ -3877,7 +3885,14 @@ export async function handleChatCore({
     );
 
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
-    console.log(`${COLORS.red}[ERROR] ${errMsg}${COLORS.reset}`);
+    if (statusCode === HTTP_STATUS.RATE_LIMITED) {
+      log?.warn?.(
+        "UPSTREAM_RATE_LIMIT",
+        `${provider} [429] request limited; evaluating account fallback`
+      );
+    } else {
+      console.log(`${COLORS.red}[ERROR] ${errMsg}${COLORS.reset}`);
+    }
 
     // Log Antigravity retry time if available
     if (retryAfterMs && provider === "antigravity") {

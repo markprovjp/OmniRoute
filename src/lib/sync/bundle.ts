@@ -125,6 +125,12 @@ function sanitizeApiKeyForSync(apiKey: unknown): JsonRecord {
     "maxRequestsPerDay",
     "maxRequestsPerMinute",
     "maxSessions",
+    "imageGenerationEnabled",
+    "imageMaxRequestsPerMinute",
+    "imageMaxRequestsPerDay",
+    "imageMaxConcurrent",
+    "imageAllowHighQuality",
+    "imageAllowedSizes",
   ]);
 }
 

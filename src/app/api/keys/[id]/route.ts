@@ -83,7 +83,28 @@ export async function PATCH(request, { params }) {
       accessSchedule,
       rateLimits,
       scopes,
+      imageGenerationEnabled,
+      imageMaxRequestsPerMinute,
+      imageMaxRequestsPerDay,
+      imageMaxConcurrent,
+      imageAllowHighQuality,
+      imageAllowedSizes,
     } = validation.data;
+
+    if (tokenLimit !== undefined && tokenLimit !== null) {
+      const currentKey = await getApiKeyById(id);
+      if (!currentKey) {
+        return NextResponse.json({ error: "Key not found" }, { status: 404 });
+      }
+      const currentTokenLimit =
+        typeof currentKey.tokenLimit === "number" ? currentKey.tokenLimit : 0;
+      if (tokenLimit > currentTokenLimit) {
+        return NextResponse.json(
+          { error: "Use Token top-up / receivables to increase the lifetime token limit" },
+          { status: 409 }
+        );
+      }
+    }
 
     const payload: Parameters<typeof updateApiKeyPermissions>[1] = {};
     if (name !== undefined) payload.name = name;
@@ -105,6 +126,20 @@ export async function PATCH(request, { params }) {
     if (accessSchedule !== undefined) payload.accessSchedule = accessSchedule;
     if (rateLimits !== undefined) payload.rateLimits = rateLimits;
     if (scopes !== undefined) payload.scopes = scopes;
+    if (imageGenerationEnabled !== undefined) {
+      payload.imageGenerationEnabled = imageGenerationEnabled;
+    }
+    if (imageMaxRequestsPerMinute !== undefined) {
+      payload.imageMaxRequestsPerMinute = imageMaxRequestsPerMinute;
+    }
+    if (imageMaxRequestsPerDay !== undefined) {
+      payload.imageMaxRequestsPerDay = imageMaxRequestsPerDay;
+    }
+    if (imageMaxConcurrent !== undefined) payload.imageMaxConcurrent = imageMaxConcurrent;
+    if (imageAllowHighQuality !== undefined) {
+      payload.imageAllowHighQuality = imageAllowHighQuality;
+    }
+    if (imageAllowedSizes !== undefined) payload.imageAllowedSizes = imageAllowedSizes;
 
     const updated = await updateApiKeyPermissions(id, payload);
     if (!updated) {
@@ -135,6 +170,12 @@ export async function PATCH(request, { params }) {
       ...(accessSchedule !== undefined && { accessSchedule }),
       ...(rateLimits !== undefined && { rateLimits }),
       ...(scopes !== undefined && { scopes }),
+      ...(imageGenerationEnabled !== undefined && { imageGenerationEnabled }),
+      ...(imageMaxRequestsPerMinute !== undefined && { imageMaxRequestsPerMinute }),
+      ...(imageMaxRequestsPerDay !== undefined && { imageMaxRequestsPerDay }),
+      ...(imageMaxConcurrent !== undefined && { imageMaxConcurrent }),
+      ...(imageAllowHighQuality !== undefined && { imageAllowHighQuality }),
+      ...(imageAllowedSizes !== undefined && { imageAllowedSizes }),
     });
   } catch (error) {
     log.error("keys", "Error updating key permissions", error);

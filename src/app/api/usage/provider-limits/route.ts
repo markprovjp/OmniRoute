@@ -1,10 +1,22 @@
 import { NextResponse } from "next/server";
+import { getProviderConnections } from "@/lib/localDb";
 import {
   getCachedProviderLimitsMap,
   getLastProviderLimitsAutoSyncTime,
   getProviderLimitsSyncIntervalMinutes,
   syncAllProviderLimits,
 } from "@/lib/usage/providerLimits";
+
+async function getActiveProviderLimitsCache() {
+  const [connections, allCaches] = await Promise.all([
+    getProviderConnections({ isActive: true }),
+    Promise.resolve(getCachedProviderLimitsMap()),
+  ]);
+  const activeIds = new Set(connections.map((connection) => connection.id));
+  return Object.fromEntries(
+    Object.entries(allCaches).filter(([connectionId]) => activeIds.has(connectionId))
+  );
+}
 
 /**
  * GET /api/usage/provider-limits
@@ -13,7 +25,7 @@ import {
 export async function GET() {
   try {
     return NextResponse.json({
-      caches: getCachedProviderLimitsMap(),
+      caches: await getActiveProviderLimitsCache(),
       intervalMinutes: getProviderLimitsSyncIntervalMinutes(),
       lastAutoSyncAt: await getLastProviderLimitsAutoSyncTime(),
     });
@@ -30,7 +42,7 @@ export async function GET() {
 export async function POST() {
   try {
     const result = await syncAllProviderLimits({ source: "manual" });
-    const caches = getCachedProviderLimitsMap();
+    const caches = await getActiveProviderLimitsCache();
     return NextResponse.json({
       ...result,
       caches,

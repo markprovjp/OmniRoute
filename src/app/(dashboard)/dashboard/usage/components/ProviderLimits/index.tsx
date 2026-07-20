@@ -28,6 +28,8 @@ const LS_PURCHASE_FILTER = "omniroute:limits:purchaseFilter";
 const LS_STATUS_FILTER = "omniroute:limits:statusFilter";
 
 const MIN_FETCH_INTERVAL_MS = 30000; // Debounce per-connection fetches
+const REFRESH_JOB_POLL_INTERVAL_MS = 500;
+const PROVIDER_LIMITS_PAGE_SIZE = 100;
 const QUOTA_BAR_GREEN_THRESHOLD = 50;
 const QUOTA_BAR_YELLOW_THRESHOLD = 20;
 const LIMITS_GRID_TEMPLATE_COLUMNS = "minmax(220px,260px) minmax(240px,1fr) 104px 76px 56px";
@@ -77,6 +79,32 @@ const TIER_FILTERS = [
 
 type PurchaseTypeKey = "all" | "oauth-free" | "oauth-sub" | "apikey";
 type StatusKey = "all" | "critical" | "alert" | "ok" | "empty";
+
+type RefreshJobSnapshot = {
+  id: string;
+  state: "running" | "completed" | "failed";
+  total: number;
+  completed: number;
+  succeeded: number;
+  failed: number;
+  cursor: number;
+  error?: string | null;
+};
+
+type RefreshJobUpdate = {
+  sequence: number;
+  connectionId: string;
+  provider: string;
+  status: "succeeded" | "failed";
+  cache?: {
+    quotas?: Record<string, unknown> | null;
+    plan?: unknown;
+    message?: string | null;
+    fetchedAt?: string;
+    source?: string | null;
+  };
+  error?: string;
+};
 
 const PURCHASE_TYPES: Array<{ key: PurchaseTypeKey; labelKey: string; fallback: string }> = [
   { key: "all", labelKey: "purchaseAll", fallback: "All" },
@@ -220,6 +248,7 @@ export default function ProviderLimits() {
   const [errors, setErrors] = useState({});
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Record<string, string>>({});
   const [refreshingAll, setRefreshingAll] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState<RefreshJobSnapshot | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
   const [tierFilter, setTierFilter] = useState("all");
   const [groupBy, setGroupBy] = useState<"none" | "environment">(() => {
@@ -258,6 +287,7 @@ export default function ProviderLimits() {
       return saved;
     return "all";
   });
+  const [currentPage, setCurrentPage] = useState(1);
 
   const lastFetchTimeRef = useRef({});
   const staleProbeRef = useRef({});
@@ -439,29 +469,140 @@ export default function ProviderLimits() {
   );
 
   const refreshingAllRef = useRef(false);
+  const refreshPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshPollAbortRef = useRef<AbortController | null>(null);
+
+  const finishRefreshAll = useCallback(() => {
+    if (refreshPollTimerRef.current) clearTimeout(refreshPollTimerRef.current);
+    refreshPollTimerRef.current = null;
+    refreshPollAbortRef.current = null;
+    refreshingAllRef.current = false;
+    setRefreshingAll(false);
+  }, []);
+
+  const pollRefreshJob = useCallback(
+    async function pollJob(jobId: string, after: number): Promise<void> {
+      const abortController = new AbortController();
+      refreshPollAbortRef.current = abortController;
+
+      try {
+        const response = await fetch(
+          `/api/usage/provider-limits/jobs/${encodeURIComponent(jobId)}?after=${after}`,
+          { cache: "no-store", signal: abortController.signal }
+        );
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || response.statusText);
+        }
+
+        const data = (await response.json()) as {
+          job: RefreshJobSnapshot;
+          updates?: RefreshJobUpdate[];
+        };
+        const quotaPatch: Record<string, any> = {};
+        const errorPatch: Record<string, string | null> = {};
+        const refreshedPatch: Record<string, string> = {};
+
+        for (const update of data.updates || []) {
+          if (update.status === "failed") {
+            errorPatch[update.connectionId] = update.error || "Failed to refresh quota";
+            continue;
+          }
+          if (!update.cache) continue;
+
+          quotaPatch[update.connectionId] = {
+            quotas: parseQuotaData(update.provider, update.cache),
+            plan: update.cache.plan || null,
+            message: update.cache.message || null,
+            raw: update.cache,
+          };
+          errorPatch[update.connectionId] = null;
+          refreshedPatch[update.connectionId] = update.cache.fetchedAt || new Date().toISOString();
+        }
+
+        if (Object.keys(quotaPatch).length > 0) {
+          setQuotaData((prev) => ({ ...prev, ...quotaPatch }));
+          setLastRefreshedAt((prev) => ({ ...prev, ...refreshedPatch }));
+        }
+        if (Object.keys(errorPatch).length > 0) {
+          setErrors((prev) => ({ ...prev, ...errorPatch }));
+        }
+        setRefreshProgress(data.job);
+
+        if (data.job.state === "running") {
+          refreshPollTimerRef.current = setTimeout(() => {
+            void pollJob(jobId, data.job.cursor);
+          }, REFRESH_JOB_POLL_INTERVAL_MS);
+          return;
+        }
+
+        if (data.job.state === "failed") {
+          console.error("Error refreshing all:", data.job.error || "Refresh job failed");
+        }
+        finishRefreshAll();
+      } catch (error) {
+        if ((error as Error)?.name === "AbortError") return;
+        console.error("Error refreshing all:", error);
+        finishRefreshAll();
+      }
+    },
+    [finishRefreshAll]
+  );
+
   const refreshAll = useCallback(async () => {
     if (refreshingAllRef.current) return;
     refreshingAllRef.current = true;
     setRefreshingAll(true);
+    setRefreshProgress(null);
+
     try {
-      const response = await fetch("/api/usage/provider-limits", { method: "POST" });
+      const response = await fetch("/api/usage/provider-limits/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        const errorMsg = errorData.error || response.statusText;
-        throw new Error(errorMsg);
+        throw new Error(errorData.error || response.statusText);
       }
 
-      const data = await response.json();
-      const connectionList = await fetchConnections();
-      applyCachedQuotaState(connectionList, data.caches || {});
-      setErrors(data.errors || {});
+      const data = (await response.json()) as { job: RefreshJobSnapshot };
+      setRefreshProgress(data.job);
+      if (data.job.state === "running") {
+        void pollRefreshJob(data.job.id, 0);
+      } else {
+        finishRefreshAll();
+      }
     } catch (error) {
       console.error("Error refreshing all:", error);
-    } finally {
-      refreshingAllRef.current = false;
-      setRefreshingAll(false);
+      finishRefreshAll();
     }
-  }, [applyCachedQuotaState, fetchConnections]);
+  }, [finishRefreshAll, pollRefreshJob]);
+
+  useEffect(
+    () => () => {
+      if (refreshPollTimerRef.current) clearTimeout(refreshPollTimerRef.current);
+      refreshPollAbortRef.current?.abort();
+      refreshingAllRef.current = false;
+    },
+    []
+  );
+
+  const attachActiveRefreshJob = useCallback(async () => {
+    if (refreshingAllRef.current) return;
+    try {
+      const response = await fetch("/api/usage/provider-limits/jobs", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = (await response.json()) as { job: RefreshJobSnapshot | null };
+      if (!data.job || data.job.state !== "running") return;
+
+      refreshingAllRef.current = true;
+      setRefreshingAll(true);
+      setRefreshProgress(data.job);
+      void pollRefreshJob(data.job.id, 0);
+    } catch {
+      // Cached quota remains usable when active-job discovery is unavailable.
+    }
+  }, [pollRefreshJob]);
 
   useEffect(() => {
     const init = async () => {
@@ -472,11 +613,12 @@ export default function ProviderLimits() {
       ]);
       applyCachedQuotaState(connectionList, caches);
       setInitialLoading(false);
+      await attachActiveRefreshJob();
     };
     init().catch(() => {
       setInitialLoading(false);
     });
-  }, [applyCachedQuotaState, fetchCachedProviderLimits, fetchConnections]);
+  }, [applyCachedQuotaState, attachActiveRefreshJob, fetchCachedProviderLimits, fetchConnections]);
 
   const filteredConnections = useMemo(
     () =>
@@ -631,10 +773,17 @@ export default function ProviderLimits() {
     quotaData,
   ]);
 
+  const totalPages = Math.max(1, Math.ceil(visibleConnections.length / PROVIDER_LIMITS_PAGE_SIZE));
+  const effectivePage = Math.min(currentPage, totalPages);
+  const pagedConnections = useMemo(() => {
+    const start = (effectivePage - 1) * PROVIDER_LIMITS_PAGE_SIZE;
+    return visibleConnections.slice(start, start + PROVIDER_LIMITS_PAGE_SIZE);
+  }, [effectivePage, visibleConnections]);
+
   const groupedConnections = useMemo(() => {
     if (groupBy !== "environment") return null;
     const groups = new Map();
-    for (const conn of visibleConnections) {
+    for (const conn of pagedConnections) {
       const key = (conn.providerSpecificData?.tag as string | undefined)?.trim() || t("ungrouped");
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(conn);
@@ -650,9 +799,10 @@ export default function ProviderLimits() {
     );
 
     return sortedGroups;
-  }, [groupBy, visibleConnections, t]);
+  }, [groupBy, pagedConnections, t]);
 
   const handleSetGroupBy = (value: "none" | "environment") => {
+    setCurrentPage(1);
     setGroupBy(value);
     localStorage.setItem(LS_GROUP_BY, value);
   };
@@ -680,6 +830,7 @@ export default function ProviderLimits() {
   }, []);
 
   const handleSetPurchaseFilter = useCallback((value: PurchaseTypeKey) => {
+    setCurrentPage(1);
     setPurchaseTypeFilter(value);
     try {
       localStorage.setItem(LS_PURCHASE_FILTER, value);
@@ -689,6 +840,7 @@ export default function ProviderLimits() {
   }, []);
 
   const handleSetStatusFilter = useCallback((value: StatusKey) => {
+    setCurrentPage(1);
     setStatusFilter(value);
     try {
       localStorage.setItem(LS_STATUS_FILTER, value);
@@ -793,7 +945,12 @@ export default function ProviderLimits() {
             >
               refresh
             </span>
-            {t("refreshAll")}
+            {refreshingAll && refreshProgress
+              ? t("refreshProgress", {
+                  completed: refreshProgress.completed,
+                  total: refreshProgress.total,
+                })
+              : t("refreshAll")}
           </button>
         </div>
       </div>
@@ -884,7 +1041,10 @@ export default function ProviderLimits() {
           return (
             <button
               key={tier.key}
-              onClick={() => setTierFilter(tier.key)}
+              onClick={() => {
+                setCurrentPage(1);
+                setTierFilter(tier.key);
+              }}
               className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold cursor-pointer"
               style={{
                 border: active
@@ -1094,6 +1254,7 @@ export default function ProviderLimits() {
             return (
               <div
                 key={conn.id}
+                data-testid="provider-limit-row"
                 style={{
                   borderBottom: !isLast || isExpanded ? "1px solid var(--color-border)" : "none",
                 }}
@@ -1384,8 +1545,8 @@ export default function ProviderLimits() {
             ));
           }
 
-          return visibleConnections.map((conn, idx) =>
-            renderRow(conn, idx === visibleConnections.length - 1)
+          return pagedConnections.map((conn, idx) =>
+            renderRow(conn, idx === pagedConnections.length - 1)
           );
         })()}
 
@@ -1402,6 +1563,33 @@ export default function ProviderLimits() {
           </div>
         )}
       </div>
+
+      {visibleConnections.length > PROVIDER_LIMITS_PAGE_SIZE && (
+        <nav
+          className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2"
+          aria-label={t("quotaPagination")}
+        >
+          <button
+            type="button"
+            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+            disabled={effectivePage <= 1}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {t("previousPage")}
+          </button>
+          <span className="text-xs text-text-muted" aria-live="polite">
+            {t("pageOfPages", { page: effectivePage, total: totalPages })}
+          </span>
+          <button
+            type="button"
+            onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+            disabled={effectivePage >= totalPages}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {t("nextPage")}
+          </button>
+        </nav>
+      )}
 
       {cutoffModalConn && (
         <QuotaCutoffModal

@@ -1824,6 +1824,144 @@ test("handleImageGeneration routes codex image requests through /responses with 
   }
 });
 
+test("handleImageGeneration (codex) defaults to base64 output and omits unsupported safety_identifier", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody;
+  globalThis.fetch = async (_url, options = {}) => {
+    capturedBody = JSON.parse(String(options.body || "{}"));
+    return new Response(
+      buildCodexSSE([
+        {
+          type: "image_generation_call",
+          id: "ig-default-output",
+          status: "completed",
+          result: "ZGVmYXVsdC1iYXNlNjQ=",
+        },
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    );
+  };
+
+  try {
+    const result = await handleImageGeneration({
+      body: { model: "codex/gpt-5.4", prompt: "kitten" },
+      credentials: { accessToken: "codex-token" },
+      log: null,
+      trace: {
+        clientRequestId: "runtime-request-id",
+        safetyIdentifier: "hashed-end-user-id",
+      },
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.data.data[0].b64_json, "ZGVmYXVsdC1iYXNlNjQ=");
+    assert.equal("url" in result.data.data[0], false);
+    assert.equal("safety_identifier" in capturedBody, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration preserves managed API key name in call logs after key deletion", async () => {
+  const originalFetch = globalThis.fetch;
+  const apiKeysDb = await import("../../src/lib/db/apiKeys.ts");
+  const core = await import("../../src/lib/db/core.ts");
+  const apiKey = await apiKeysDb.createApiKey(
+    `Image call-log owner ${Date.now()}`,
+    "image-call-log-machine"
+  );
+  globalThis.fetch = async () =>
+    new Response(
+      buildCodexSSE([
+        {
+          type: "image_generation_call",
+          id: "ig-attributed-output",
+          status: "completed",
+          result: "YXR0cmlidXRlZA==",
+        },
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    );
+
+  try {
+    const result = await handleImageGeneration({
+      body: { model: "codex/gpt-5.4", prompt: "attributed image" },
+      credentials: { accessToken: "codex-token" },
+      log: null,
+      trace: {
+        clientRequestId: "attributed-image-request",
+        apiKeyId: apiKey.id,
+        apiKeyName: apiKey.name,
+      },
+    });
+    assert.equal(result.success, true);
+
+    const db = core.getDbInstance();
+    let row: Record<string, unknown> | undefined;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      row = db
+        .prepare(
+          `SELECT id, api_key_id, api_key_name
+           FROM call_logs
+           WHERE api_key_name = ?
+           ORDER BY timestamp DESC
+           LIMIT 1`
+        )
+        .get(apiKey.name) as Record<string, unknown> | undefined;
+      if (row) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    assert.equal(row?.api_key_id, apiKey.id);
+    assert.equal(row?.api_key_name, apiKey.name);
+    await apiKeysDb.deleteApiKey(apiKey.id);
+    const retained = db
+      .prepare("SELECT api_key_id, api_key_name FROM call_logs WHERE id = ?")
+      .get(row?.id) as Record<string, unknown> | undefined;
+    assert.equal(retained?.api_key_id, apiKey.id);
+    assert.equal(retained?.api_key_name, apiKey.name);
+  } finally {
+    await apiKeysDb.deleteApiKey(apiKey.id).catch(() => false);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration does not log raw OpenAI provider error bodies", async () => {
+  const originalFetch = globalThis.fetch;
+  const errorMessages: string[] = [];
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        error: {
+          code: "provider_failure",
+          message: "request failed",
+          private_detail: "raw-provider-secret-must-not-appear",
+        },
+      }),
+      { status: 503, headers: { "content-type": "application/json" } }
+    );
+
+  try {
+    const result = await handleImageGeneration({
+      body: { model: "openai/gpt-image-2", prompt: "private prompt" },
+      credentials: { apiKey: "provider-key" },
+      log: {
+        info: () => {},
+        warn: () => {},
+        error: (_scope: string, message: string) => errorMessages.push(message),
+      },
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(
+      errorMessages.some((message) => message.includes("raw-provider-secret")),
+      false
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("handleImageGeneration (codex) uses request timeout_ms for upstream abort budget", async () => {
   const originalFetch = globalThis.fetch;
   let capturedSignal;
@@ -1849,7 +1987,7 @@ test("handleImageGeneration (codex) uses request timeout_ms for upstream abort b
   }
 });
 
-test("handleImageGeneration (codex) returns a data URL when response_format is not b64_json", async () => {
+test("handleImageGeneration (codex) returns a data URL when response_format is explicitly url", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     const sse = buildCodexSSE([
@@ -1860,7 +1998,7 @@ test("handleImageGeneration (codex) returns a data URL when response_format is n
 
   try {
     const result = await handleImageGeneration({
-      body: { model: "cx/gpt-5.4", prompt: "kitten" },
+      body: { model: "cx/gpt-5.4", prompt: "kitten", response_format: "url" },
       credentials: { accessToken: "codex-token" },
       log: null,
     });

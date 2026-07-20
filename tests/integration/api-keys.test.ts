@@ -133,6 +133,95 @@ test("POST /api/keys creates a key, preserves special characters, and persists n
   assert.equal(compliance.isNoLog(body.id), true);
 });
 
+test("POST /api/keys returns conservative per-person image policy defaults", async () => {
+  await enableManagementAuth();
+  await createManagementKey();
+
+  const response = await listRoute.POST(
+    await makeManagementSessionRequest("http://localhost/api/keys", {
+      method: "POST",
+      body: { name: "Image policy user" },
+    })
+  );
+  const body = (await response.json()) as any;
+  const stored = await apiKeysDb.getApiKeyById(body.id);
+
+  assert.equal(response.status, 201);
+  assert.equal(body.imageGenerationEnabled, true);
+  assert.equal(body.imageMaxRequestsPerMinute, 2);
+  assert.equal(body.imageMaxRequestsPerDay, 10);
+  assert.equal(body.imageMaxConcurrent, 1);
+  assert.equal(body.imageAllowHighQuality, false);
+  assert.deepEqual(body.imageAllowedSizes, ["1024x1024", "1536x1024", "1024x1536"]);
+  assert.equal(stored?.imageGenerationEnabled, true);
+  assert.equal(stored?.imageMaxRequestsPerMinute, 2);
+  assert.equal(stored?.imageMaxRequestsPerDay, 10);
+  assert.equal(stored?.imageMaxConcurrent, 1);
+  assert.equal(stored?.imageAllowHighQuality, false);
+  assert.deepEqual(stored?.imageAllowedSizes, ["1024x1024", "1536x1024", "1024x1536"]);
+});
+
+test("PATCH /api/keys/[id] persists per-person image policy overrides", async () => {
+  await enableManagementAuth();
+  await createManagementKey();
+  const created = await apiKeysDb.createApiKey("Custom image policy", MACHINE_ID);
+
+  const response = await keyRoute.PATCH(
+    await makeManagementSessionRequest(`http://localhost/api/keys/${created.id}`, {
+      method: "PATCH",
+      body: {
+        imageGenerationEnabled: false,
+        imageMaxRequestsPerMinute: 5,
+        imageMaxRequestsPerDay: 25,
+        imageMaxConcurrent: 2,
+        imageAllowHighQuality: true,
+        imageAllowedSizes: ["1024x1024", "1536x1024"],
+      },
+    }),
+    { params: Promise.resolve({ id: created.id }) }
+  );
+  const body = (await response.json()) as any;
+  const stored = await apiKeysDb.getApiKeyById(created.id);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.imageGenerationEnabled, false);
+  assert.equal(body.imageMaxRequestsPerMinute, 5);
+  assert.equal(body.imageMaxRequestsPerDay, 25);
+  assert.equal(body.imageMaxConcurrent, 2);
+  assert.equal(body.imageAllowHighQuality, true);
+  assert.deepEqual(body.imageAllowedSizes, ["1024x1024", "1536x1024"]);
+  assert.equal(stored?.imageGenerationEnabled, false);
+  assert.equal(stored?.imageMaxRequestsPerMinute, 5);
+  assert.equal(stored?.imageMaxRequestsPerDay, 25);
+  assert.equal(stored?.imageMaxConcurrent, 2);
+  assert.equal(stored?.imageAllowHighQuality, true);
+  assert.deepEqual(stored?.imageAllowedSizes, ["1024x1024", "1536x1024"]);
+});
+
+test("PATCH /api/keys/[id] rejects invalid image policy limits", async () => {
+  await enableManagementAuth();
+  await createManagementKey();
+  const created = await apiKeysDb.createApiKey("Invalid image policy", MACHINE_ID);
+
+  const negativeLimit = await keyRoute.PATCH(
+    await makeManagementSessionRequest(`http://localhost/api/keys/${created.id}`, {
+      method: "PATCH",
+      body: { imageMaxRequestsPerDay: -1 },
+    }),
+    { params: Promise.resolve({ id: created.id }) }
+  );
+  const emptySizes = await keyRoute.PATCH(
+    await makeManagementSessionRequest(`http://localhost/api/keys/${created.id}`, {
+      method: "PATCH",
+      body: { imageAllowedSizes: [] },
+    }),
+    { params: Promise.resolve({ id: created.id }) }
+  );
+
+  assert.equal(negativeLimit.status, 400);
+  assert.equal(emptySizes.status, 400);
+});
+
 test("POST /api/keys creates system and prepaid billing modes", async () => {
   await enableManagementAuth();
   await createManagementKey();

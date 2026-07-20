@@ -115,7 +115,48 @@ Content-Type: application/json
 
 Available providers: OpenAI (GPT Image 2), xAI (Grok Image), Together AI (FLUX), Fireworks AI, Nebius (FLUX), Hyperbolic, NanoBanana, **OpenRouter**, SD WebUI (local), ComfyUI (local).
 
+### Image security and per-key limits
+
+Image generation, provider-specific generation, and image edits always require a managed OmniRoute API key, even when `REQUIRE_API_KEY` is disabled for other client APIs. Configure each person's image policy in **Dashboard → API Key Manager → Permissions → Image generation policy**.
+
+Default policy for new and existing managed keys:
+
+- `n = 1` (hard limit);
+- 2 accepted operations per rolling minute and 10 per rolling 24 hours;
+- 1 running operation per key and 8 globally;
+- `quality = medium` and `size = 1024x1024` when omitted;
+- high/HD/auto quality disabled until explicitly enabled per key;
+- sizes restricted to `1024x1024`, `1536x1024`, and `1024x1536`;
+- request timeout capped at 180 seconds;
+- image-edit files capped at 20 MiB.
+
+Every admitted operation returns an internal `x-request-id` response header. The audit ledger stores the API key ID/name snapshot, provider/model/connection, status, duration, generated count, and upstream request ID when available. It stores only the prompt SHA-256 and length—not the raw key, raw prompt, or image bytes. Events are retained for 90 days and stale running leases expire after 180 seconds.
+
+See [Image Generation Control Plane](../security/IMAGE_GENERATION_CONTROL_PLANE.md) for rollout, audit queries, and incident operations.
+
+Common control-plane responses:
+
+| Status | Meaning                                                                     |
+| ------ | --------------------------------------------------------------------------- |
+| `401`  | Managed API key is missing or invalid                                       |
+| `403`  | Key/model/image policy rejects the operation                                |
+| `413`  | Multipart image-edit request or file is too large                           |
+| `429`  | Per-minute, daily, per-key concurrency, or global concurrency limit reached |
+| `503`  | Admission/audit persistence is unavailable; provider work was not started   |
+
 ```bash
+# Production example — use the HTTPS hostname configured in Caddy, not the raw server IP.
+curl --fail-with-body "https://<OMNIROUTE_DOMAIN>/v1/images/generations" \
+  -H "Authorization: Bearer $OMNIROUTE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-image-2",
+    "prompt": "A beautiful sunset over mountains",
+    "size": "1024x1024",
+    "quality": "medium",
+    "n": 1
+  }'
+
 # List all image models
 GET /v1/images/generations
 ```
@@ -135,25 +176,25 @@ Authorization: Bearer your-api-key
 
 ## Compatibility Endpoints
 
-| Method | Path                        | Format                          |
-| ------ | --------------------------- | ------------------------------- |
-| POST   | `/v1/chat/completions`      | OpenAI                          |
-| POST   | `/v1/messages`              | Anthropic                       |
-| POST   | `/v1/responses`             | OpenAI Responses                |
-| POST   | `/v1/embeddings`            | OpenAI                          |
-| POST   | `/v1/images/generations`    | OpenAI Images                   |
-| POST   | `/v1/images/edits`          | OpenAI Images (edit/inpaint)    |
-| POST   | `/v1/videos/generations`    | OpenAI-style video generation   |
-| POST   | `/v1/music/generations`     | OpenAI-style music generation   |
-| POST   | `/v1/audio/transcriptions`  | OpenAI Audio (STT)              |
-| POST   | `/v1/audio/speech`          | OpenAI TTS (returns audio body) |
-| POST   | `/v1/rerank`                | Cohere/Voyage-style rerank      |
-| POST   | `/v1/moderations`           | OpenAI Moderations              |
-| GET    | `/v1/models`                | OpenAI                          |
-| POST   | `/v1/messages/count_tokens` | Anthropic                       |
-| GET    | `/v1beta/models`            | Gemini                          |
-| POST   | `/v1beta/models/{...path}`  | Gemini generateContent          |
-| POST   | `/v1/api/chat`              | Ollama                          |
+| Method | Path                        | Format                                                           |
+| ------ | --------------------------- | ---------------------------------------------------------------- |
+| POST   | `/v1/chat/completions`      | OpenAI                                                           |
+| POST   | `/v1/messages`              | Anthropic                                                        |
+| POST   | `/v1/responses`             | OpenAI Responses                                                 |
+| POST   | `/v1/embeddings`            | OpenAI                                                           |
+| POST   | `/v1/images/generations`    | OpenAI Images                                                    |
+| POST   | `/v1/images/edits`          | OpenAI-style multipart edit; currently `chatgpt-web` models only |
+| POST   | `/v1/videos/generations`    | OpenAI-style video generation                                    |
+| POST   | `/v1/music/generations`     | OpenAI-style music generation                                    |
+| POST   | `/v1/audio/transcriptions`  | OpenAI Audio (STT)                                               |
+| POST   | `/v1/audio/speech`          | OpenAI TTS (returns audio body)                                  |
+| POST   | `/v1/rerank`                | Cohere/Voyage-style rerank                                       |
+| POST   | `/v1/moderations`           | OpenAI Moderations                                               |
+| GET    | `/v1/models`                | OpenAI                                                           |
+| POST   | `/v1/messages/count_tokens` | Anthropic                                                        |
+| GET    | `/v1beta/models`            | Gemini                                                           |
+| POST   | `/v1beta/models/{...path}`  | Gemini generateContent                                           |
+| POST   | `/v1/api/chat`              | Ollama                                                           |
 
 All POST routes follow the same shape: `Bearer your-api-key` + Zod-validated JSON body (`v1RerankSchema`, `v1ModerationSchema`, `v1AudioSpeechSchema`, etc., see `src/shared/validation/schemas.ts`). 4xx is returned on schema failure.
 
@@ -167,8 +208,8 @@ POST /v1/moderations { "model": "omni-moderation-latest", "input": "..." }
 # TTS — returns audio/mpeg (or requested format) body
 POST /v1/audio/speech { "model": "openai/tts-1", "input": "Hello", "voice": "alloy" }
 
-# Image edit (multipart)
-POST /v1/images/edits  -F image=@input.png -F prompt="..." -F mask=@mask.png
+# Image edit (multipart; currently chatgpt-web models only)
+POST /v1/images/edits  -F model=cgpt-web/gpt-5.3-instant -F image=@input.png -F prompt="..."
 
 # Video / music generation (provider-prefixed model id)
 POST /v1/videos/generations { "model": "runway/gen-3", "prompt": "..." }
@@ -323,14 +364,82 @@ Response example:
 | `/api/keys*`          | Various  | API key management            |
 | `/api/pricing`        | GET      | Model pricing                 |
 
+#### API key token credits and receivables
+
+These management-authenticated routes back **Dashboard → API Key Manager → Token top-up / receivables**:
+
+| Endpoint                            | Method | Description                                                                               |
+| ----------------------------------- | ------ | ----------------------------------------------------------------------------------------- |
+| `/api/keys/[id]/credits`            | GET    | List token-credit/payment history and current outstanding VND receivables for one API key |
+| `/api/keys/[id]/credits`            | POST   | Atomically increase the lifetime token limit and record paid/unpaid VND payment status    |
+| `/api/keys/[id]/credits/[creditId]` | PATCH  | Mark a receivable paid after the bank transfer is received                                |
+
+A normal top-up accepts `tokenAmount`, `amountDueVnd`, `paymentStatus`, `applyTokens`, and an optional operator `note`. Set `applyTokens: false` to backfill debt for tokens that were already added previously. The `15,000,000` test-credit option is always free and cannot create receivables. Marking a bank transfer paid clears the outstanding balance but preserves the ledger row for audit history. Monetary values are stored as whole VND integers; no API keys or payment credentials are stored in the ledger.
+
+Migration `070_api_key_credit_ledger.sql` is additive. Token entitlement and the ledger row are updated in one SQLite transaction. Back up SQLite before rollout, smoke-test one free test credit and one paid/unpaid transition, and retain the previous application plus pre-migration database backup for rollback. Deleting a key sets the ledger foreign key to `NULL` but preserves its key/customer snapshots and payment history.
+
+#### Token quota accounting and legacy reconciliation
+
+Lifetime/daily/hourly key quotas charge non-cached input tokens plus output tokens. Provider-reported cache-read/cache-creation counters remain visible in usage history and call logs but are not charged again. Exact provider usage settles the reservation once and is authoritative across the response body, `/api/v1/usage`, `usage_history`, `api_key_usage_ledger`, and `api_keys.token_used`.
+
+Redis is a distributed quota mirror, not the durable entitlement source. If Redis rejects a reservation but SQLite still allows it, OmniRoute admits the request using SQLite and repairs the Redis counters from the committed ledger instead of returning a false `429`.
+
+Migration `071_reconcile_cached_token_usage.sql` repairs legacy counters only when evidence is complete: the current `token_used` must exactly equal the successful raw `usage_history` total, cached tokens must have been overcounted, and the key must have no modern quota-ledger rows. Ambiguous/imported counters are left unchanged. Every correction is recorded in `api_key_token_reconciliation_audit` with previous/corrected values and excluded cached tokens.
+
+For emergency rollback after reviewing the audit rows, restore only unchanged reconciled counters:
+
+```sql
+UPDATE api_keys
+SET token_used = (
+  SELECT previous_token_used
+  FROM api_key_token_reconciliation_audit
+  WHERE api_key_id = api_keys.id
+)
+WHERE EXISTS (
+  SELECT 1
+  FROM api_key_token_reconciliation_audit
+  WHERE api_key_id = api_keys.id
+    AND api_keys.token_used = corrected_token_used
+);
+```
+
 ### Usage & Analytics
 
-| Endpoint                    | Method | Description          |
-| --------------------------- | ------ | -------------------- |
-| `/api/usage/history`        | GET    | Usage history        |
-| `/api/usage/logs`           | GET    | Usage logs           |
-| `/api/usage/request-logs`   | GET    | Request-level logs   |
-| `/api/usage/[connectionId]` | GET    | Per-connection usage |
+| Endpoint                                  | Method   | Description                                                |
+| ----------------------------------------- | -------- | ---------------------------------------------------------- |
+| `/api/usage/history`                      | GET      | Usage history                                              |
+| `/api/usage/logs`                         | GET      | Usage logs                                                 |
+| `/api/usage/request-logs`                 | GET      | Request-level logs                                         |
+| `/api/usage/[connectionId]`               | GET      | Per-connection usage                                       |
+| `/api/usage/provider-limits`              | GET      | Active-account quota cache (no live refresh)               |
+| `/api/usage/provider-limits/jobs`         | GET/POST | Read the active job or start/join an async Refresh All job |
+| `/api/usage/provider-limits/jobs/[jobId]` | GET      | Poll cursor-based progressive quota updates                |
+
+#### Asynchronous Provider Limits refresh
+
+`POST /api/usage/provider-limits/jobs` requires management authentication and returns `202 Accepted`. If another all-account refresh is already running in the same self-hosted process, the response reuses that job with `deduplicated: true`. The dashboard keeps cached quota visible and polls the job without cancelling it when the page closes.
+
+```json
+{
+  "job": {
+    "id": "6e42f6a4-...",
+    "state": "running",
+    "total": 1000,
+    "completed": 0,
+    "succeeded": 0,
+    "failed": 0,
+    "cursor": 0,
+    "startedAt": "2026-07-20T00:00:00.000Z",
+    "completedAt": null,
+    "error": null
+  },
+  "deduplicated": false
+}
+```
+
+Poll only newer updates with `GET /api/usage/provider-limits/jobs/{jobId}?after={cursor}`. Responses use `Cache-Control: no-store` and contain sanitized cache/error metadata only—never provider credentials or raw upstream bodies. The original synchronous `POST /api/usage/provider-limits` remains available for compatibility.
+
+The job coordinator is process-local by design for OmniRoute's persistent self-hosted/Electron runtime. Multi-instance or serverless deployments must replace it with a durable shared queue while keeping the HTTP contract.
 
 ### Settings
 

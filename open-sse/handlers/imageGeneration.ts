@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 /**
  * Image Generation Handler
  *
@@ -26,7 +27,7 @@ import { getCodexClientVersion, getCodexUserAgent } from "../config/codexClient.
 import { ChatGptWebExecutor } from "../executors/chatgpt-web.ts";
 import { getChatGptImage, findChatGptImageBySha256 } from "../services/chatgptImageCache.ts";
 import { createHash } from "node:crypto";
-import { saveCallLog } from "@/lib/usageDb";
+import { saveCallLog as persistCallLog } from "@/lib/usageDb";
 import { sleep } from "../utils/sleep.ts";
 import {
   getKieErrorMessage,
@@ -87,6 +88,98 @@ const OPENAI_IMAGE_TO_IMAGE_MODELS = new Set([
 const IMAGE_ASPECT_RATIO_PATTERN = /^\d+:\d+$/;
 const DEFAULT_IMAGE_GENERATION_TIMEOUT_MS = 360_000;
 
+const IMAGE_LOG_SCALAR_KEYS = new Set([
+  "model",
+  "size",
+  "n",
+  "quality",
+  "response_format",
+  "output_format",
+  "aspect_ratio",
+  "width",
+  "height",
+  "steps",
+  "timeout_ms",
+  "poll_interval_ms",
+  "images_count",
+  "edit_match",
+  "cached_match",
+  "image_bytes",
+  "status",
+  "task_id",
+]);
+
+function findImagePrompt(value: unknown, depth = 0): string | null {
+  if (depth > 6 || value === null || value === undefined) return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findImagePrompt(item, depth + 1);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if ((key === "prompt" || key === "text") && typeof child === "string") return child;
+    const found = findImagePrompt(child, depth + 1);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+function sanitizeImageLogPayload(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, candidate] of Object.entries(source)) {
+    if (
+      IMAGE_LOG_SCALAR_KEYS.has(key) &&
+      (typeof candidate === "string" ||
+        typeof candidate === "number" ||
+        typeof candidate === "boolean")
+    ) {
+      sanitized[key] = candidate;
+    }
+  }
+  const prompt = findImagePrompt(source);
+  if (prompt !== null) {
+    sanitized.prompt_sha256 = createHash("sha256").update(prompt).digest("hex");
+    sanitized.prompt_length = prompt.length;
+  }
+  return sanitized;
+}
+
+interface ImageCallLogContext {
+  apiKeyId?: string | null;
+  apiKeyName?: string | null;
+  connectionId?: string | null;
+}
+
+const imageCallLogContext = new AsyncLocalStorage<ImageCallLogContext>();
+
+function getImageCallLogContext(trace: unknown): ImageCallLogContext {
+  if (!trace || typeof trace !== "object") return {};
+  const record = trace as Record<string, unknown>;
+  return {
+    apiKeyId: typeof record.apiKeyId === "string" ? record.apiKeyId : null,
+    apiKeyName: typeof record.apiKeyName === "string" ? record.apiKeyName : null,
+    connectionId: typeof record.connectionId === "string" ? record.connectionId : null,
+  };
+}
+
+function saveCallLog(entry) {
+  const context = imageCallLogContext.getStore();
+  return persistCallLog({
+    ...entry,
+    apiKeyId: entry?.apiKeyId ?? context?.apiKeyId ?? null,
+    apiKeyName: entry?.apiKeyName ?? context?.apiKeyName ?? null,
+    connectionId: entry?.connectionId ?? context?.connectionId ?? null,
+    requestBody: sanitizeImageLogPayload(entry?.requestBody),
+    responseBody: sanitizeImageLogPayload(entry?.responseBody),
+    error: entry?.error ? "Image provider request failed" : null,
+  });
+}
+
 function normalizeImageAspectRatio(value: unknown, fallbackSize: unknown): string {
   if (typeof value === "string") {
     const trimmedValue = value.trim();
@@ -109,6 +202,24 @@ function sanitizeImageProviderError(errorText: string): unknown {
     return sanitizeUpstreamDetails(parsed) || sanitizeErrorMessage(errorText);
   }
   return sanitizeErrorMessage(errorText);
+}
+
+function formatImageProviderErrorForLog(errorText: string): string {
+  const parsed = parseJsonOrNull(errorText);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return "Image provider request failed";
+  }
+  const record = parsed as Record<string, unknown>;
+  const nested =
+    record.error && typeof record.error === "object" && !Array.isArray(record.error)
+      ? (record.error as Record<string, unknown>)
+      : record;
+  const code = typeof nested.code === "string" ? nested.code.replace(/[^A-Za-z0-9._:-]/g, "") : "";
+  const type = typeof nested.type === "string" ? nested.type.replace(/[^A-Za-z0-9._:-]/g, "") : "";
+  const identifiers = [code && `code=${code}`, type && `type=${type}`].filter(Boolean);
+  return identifiers.length > 0
+    ? `Image provider request failed (${identifiers.join(", ")})`
+    : "Image provider request failed";
 }
 
 const BFL_MODEL_ENDPOINTS = {
@@ -199,13 +310,20 @@ const FAL_PRESET_SIZES = {
  * @param {object} options.log - Logger
  * @param {string} [options.resolvedProvider] - Pre-resolved provider ID (from route layer custom model resolution)
  */
-export async function handleImageGeneration({
+export function handleImageGeneration(options) {
+  return imageCallLogContext.run(getImageCallLogContext(options?.trace), () =>
+    handleImageGenerationInternal(options)
+  );
+}
+
+async function handleImageGenerationInternal({
   body,
   credentials,
   log,
   resolvedProvider = null,
   signal = null,
   clientHeaders = null,
+  trace = null,
 }) {
   let provider, model;
 
@@ -267,6 +385,7 @@ export async function handleImageGeneration({
       credentials,
       log,
       signal,
+      trace,
     });
   }
 
@@ -402,6 +521,7 @@ export async function handleImageGeneration({
       credentials,
       log,
       signal,
+      trace,
     });
   }
 
@@ -437,6 +557,7 @@ export async function handleImageGeneration({
     credentials,
     log,
     signal,
+    trace,
   });
 }
 
@@ -537,10 +658,9 @@ async function handleKieImageGeneration({
   }
 
   if (log) {
-    const promptPreview = String(body.prompt ?? "").slice(0, 60);
     log.info(
       "IMAGE",
-      `${provider}/${model} (${isMarket ? "market" : "direct"}) | prompt: "${promptPreview}..."`
+      `${provider}/${model} (${isMarket ? "market" : "direct"}) | prompt_length=${String(body.prompt ?? "").length}`
     );
   }
 
@@ -562,7 +682,7 @@ async function handleKieImageGeneration({
         createData?.error ||
         "KIE image generation did not return taskId";
       if (log) {
-        log.error("IMAGE", `KIE createTask failed: ${JSON.stringify(createData)}`);
+        log.error("IMAGE", `KIE createTask failed: Image provider request failed`);
       }
       return saveImageErrorResult({
         provider,
@@ -615,7 +735,7 @@ async function handleKieImageGeneration({
       "KIE image task failed";
 
     if (log) {
-      log.error("IMAGE", `KIE poll failed for task ${taskId}: ${JSON.stringify(recordData)}`);
+      log.error("IMAGE", `KIE poll failed for task ${taskId}: Image provider request failed`);
     }
 
     return saveImageErrorResult({
@@ -710,10 +830,9 @@ async function handleGeminiImageGeneration({ model, providerConfig, body, creden
   delete headers["x-goog-user-project"];
 
   if (log) {
-    const promptPreview = promptText.slice(0, 60);
     log.info(
       "IMAGE",
-      `antigravity/${model} (gemini) | prompt: "${promptPreview}..." | format: gemini-image`
+      `antigravity/${model} (gemini) | prompt_length=${promptText.length} | format: gemini-image`
     );
   }
 
@@ -786,7 +905,10 @@ async function handleGeminiImageGeneration({ model, providerConfig, body, creden
     };
   } catch (err) {
     if (log) {
-      log.error("IMAGE", `antigravity fetch error: ${err.message}`);
+      log.error(
+        "IMAGE",
+        `antigravity fetch error: ${sanitizeErrorMessage((err as Error).message || err)}`
+      );
     }
 
     saveCallLog({
@@ -819,6 +941,7 @@ async function handleOpenAIImageGeneration({
   credentials,
   log,
   signal = null,
+  trace = null,
 }) {
   const startTime = Date.now();
 
@@ -845,10 +968,26 @@ async function handleOpenAIImageGeneration({
   if (body.size !== undefined) upstreamBody.size = body.size;
   if (body.quality !== undefined) upstreamBody.quality = body.quality;
   if (body.response_format !== undefined) upstreamBody.response_format = body.response_format;
+  if (body.output_format !== undefined) upstreamBody.output_format = body.output_format;
+  if (body.output_compression !== undefined) {
+    upstreamBody.output_compression = body.output_compression;
+  }
+  if (body.background !== undefined) upstreamBody.background = body.background;
+  if (body.partial_images !== undefined) upstreamBody.partial_images = body.partial_images;
+  if (body.stream !== undefined) upstreamBody.stream = body.stream;
   if (body.style !== undefined) upstreamBody.style = body.style;
+  if (provider === "openai" && typeof trace?.safetyIdentifier === "string") {
+    // The Images API currently names its end-user abuse identifier `user`.
+    // `safety_identifier` is the corresponding field on the Responses API.
+    upstreamBody.user = trace.safetyIdentifier;
+  }
 
   const { imageUrl } = extractImageInputs(body);
-  if (imageUrl && OPENAI_IMAGE_TO_IMAGE_MODELS.has(model)) {
+  if (
+    imageUrl &&
+    (OPENAI_IMAGE_TO_IMAGE_MODELS.has(model) ||
+      OPENAI_IMAGE_TO_IMAGE_MODELS.has(`${provider}/${model}`))
+  ) {
     upstreamBody.image_url = imageUrl;
   }
 
@@ -856,6 +995,9 @@ async function handleOpenAIImageGeneration({
   const headers = {
     "Content-Type": "application/json",
   };
+  if (typeof trace?.clientRequestId === "string") {
+    headers["X-Client-Request-Id"] = trace.clientRequestId;
+  }
 
   const token = credentials.apiKey || credentials.accessToken;
   if (providerConfig.authHeader === "bearer") {
@@ -865,13 +1007,9 @@ async function handleOpenAIImageGeneration({
   }
 
   if (log) {
-    const promptPreview =
-      typeof body.prompt === "string"
-        ? body.prompt.slice(0, 60)
-        : String(body.prompt ?? "").slice(0, 60);
     log.info(
       "IMAGE",
-      `${provider}/${model} | prompt: "${promptPreview}..." | size: ${body.size || "default"}`
+      `${provider}/${model} | prompt_length=${String(body.prompt ?? "").length} | size: ${body.size || "default"}`
     );
   }
 
@@ -1112,16 +1250,7 @@ async function handleChatGptWebImageGeneration({
  * original conversation node, and we don't have a path to upload bytes
  * directly.
  */
-export async function handleImageEdit({
-  provider,
-  model,
-  body,
-  imageBytes,
-  credentials,
-  log,
-  signal = null,
-  clientHeaders = null,
-}: {
+type HandleImageEditOptions = {
   provider: string;
   model: string;
   body: Record<string, unknown>;
@@ -1135,7 +1264,25 @@ export async function handleImageEdit({
   } | null;
   signal?: AbortSignal | null;
   clientHeaders?: Record<string, string> | null;
-}) {
+  trace?: ImageCallLogContext | null;
+};
+
+export function handleImageEdit(options: HandleImageEditOptions) {
+  return imageCallLogContext.run(getImageCallLogContext(options.trace), () =>
+    handleImageEditInternal(options)
+  );
+}
+
+async function handleImageEditInternal({
+  provider,
+  model,
+  body,
+  imageBytes,
+  credentials,
+  log,
+  signal = null,
+  clientHeaders = null,
+}: HandleImageEditOptions) {
   const startTime = Date.now();
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   if (!prompt) {
@@ -1232,16 +1379,20 @@ export async function handleImageEdit({
     clientHeaders,
   });
 
+  const upstreamRequestId = result.response.headers.get("x-request-id");
   const responseText = await result.response.text();
   if (result.response.status >= 400) {
-    return saveImageErrorResult({
-      provider,
-      model,
-      status: result.response.status,
-      startTime,
-      error: responseText,
-      requestBody,
-    });
+    return {
+      ...saveImageErrorResult({
+        provider,
+        model,
+        status: result.response.status,
+        startTime,
+        error: responseText,
+        requestBody,
+      }),
+      upstreamRequestId,
+    };
   }
 
   let content = "";
@@ -1254,14 +1405,17 @@ export async function handleImageEdit({
 
   const urls = extractMarkdownImageUrls(content);
   if (urls.length === 0) {
-    return saveImageErrorResult({
-      provider,
-      model,
-      status: 502,
-      startTime,
-      error: `ChatGPT Web edit completed without returning image markdown: ${content.slice(0, 300)}`,
-      requestBody,
-    });
+    return {
+      ...saveImageErrorResult({
+        provider,
+        model,
+        status: 502,
+        startTime,
+        error: `ChatGPT Web edit completed without returning image markdown: ${content.slice(0, 300)}`,
+        requestBody,
+      }),
+      upstreamRequestId,
+    };
   }
 
   const images: Array<{ url?: string; b64_json?: string }> = [];
@@ -1273,26 +1427,32 @@ export async function handleImageEdit({
     const id = url.match(CHATGPT_WEB_IMAGE_ID_RE)?.[1];
     const cachedNew = id ? getChatGptImage(id) : null;
     if (!cachedNew) {
-      return saveImageErrorResult({
-        provider,
-        model,
-        status: 502,
-        startTime,
-        error: "ChatGPT Web image bytes expired before b64_json conversion",
-        requestBody,
-      });
+      return {
+        ...saveImageErrorResult({
+          provider,
+          model,
+          status: 502,
+          startTime,
+          error: "ChatGPT Web image bytes expired before b64_json conversion",
+          requestBody,
+        }),
+        upstreamRequestId,
+      };
     }
     images.push({ b64_json: cachedNew.bytes.toString("base64") });
   }
 
-  return saveImageSuccessResult({
-    provider,
-    model,
-    startTime,
-    requestBody,
-    responseBody: { images_count: images.length, edit_match: Boolean(cached?.entry.context) },
-    images,
-  });
+  return {
+    ...saveImageSuccessResult({
+      provider,
+      model,
+      startTime,
+      requestBody,
+      responseBody: { images_count: images.length, edit_match: Boolean(cached?.entry.context) },
+      images,
+    }),
+    upstreamRequestId,
+  };
 }
 
 async function handleFalAIImageGeneration({
@@ -1345,8 +1505,10 @@ async function handleFalAIImageGeneration({
   }
 
   if (log) {
-    const promptPreview = String(body.prompt ?? "").slice(0, 60);
-    log.info("IMAGE", `${provider}/${model} (fal-ai) | prompt: "${promptPreview}..."`);
+    log.info(
+      "IMAGE",
+      `${provider}/${model} (fal-ai) | prompt_length=${String(body.prompt ?? "").length}`
+    );
   }
 
   try {
@@ -1362,7 +1524,10 @@ async function handleFalAIImageGeneration({
     if (!response.ok) {
       const errorText = await response.text();
       if (log)
-        log.error("IMAGE", `${provider} error ${response.status}: ${errorText.slice(0, 200)}`);
+        log.error(
+          "IMAGE",
+          `${provider} error ${response.status}: ${formatImageProviderErrorForLog(errorText)}`
+        );
       return saveImageErrorResult({
         provider,
         model,
@@ -1385,7 +1550,11 @@ async function handleFalAIImageGeneration({
       images,
     });
   } catch (err) {
-    if (log) log.error("IMAGE", `${provider} fetch error: ${err.message}`);
+    if (log)
+      log.error(
+        "IMAGE",
+        `${provider} fetch error: ${sanitizeErrorMessage((err as Error).message || err)}`
+      );
     return saveImageErrorResult({
       provider,
       model,
@@ -1528,8 +1697,10 @@ async function handleStabilityAIImageGeneration({
     }
 
     if (log) {
-      const promptPreview = String(body.prompt ?? "").slice(0, 60);
-      log.info("IMAGE", `${provider}/${model} (stability-ai) | prompt: "${promptPreview}..."`);
+      log.info(
+        "IMAGE",
+        `${provider}/${model} (stability-ai) | prompt_length=${String(body.prompt ?? "").length}`
+      );
     }
 
     const response = await fetch(`${providerConfig.baseUrl.replace(/\/$/, "")}${endpoint}`, {
@@ -1544,7 +1715,10 @@ async function handleStabilityAIImageGeneration({
     if (!response.ok) {
       const errorText = await response.text();
       if (log)
-        log.error("IMAGE", `${provider} error ${response.status}: ${errorText.slice(0, 200)}`);
+        log.error(
+          "IMAGE",
+          `${provider} error ${response.status}: ${formatImageProviderErrorForLog(errorText)}`
+        );
       return saveImageErrorResult({
         provider,
         model,
@@ -1575,7 +1749,11 @@ async function handleStabilityAIImageGeneration({
       images,
     });
   } catch (err) {
-    if (log) log.error("IMAGE", `${provider} fetch error: ${err.message}`);
+    if (log)
+      log.error(
+        "IMAGE",
+        `${provider} fetch error: ${sanitizeErrorMessage((err as Error).message || err)}`
+      );
     return saveImageErrorResult({
       provider,
       model,
@@ -1645,8 +1823,10 @@ async function handleBlackForestLabsImageGeneration({
     if (body.safety_tolerance !== undefined) upstreamBody.safety_tolerance = body.safety_tolerance;
 
     if (log) {
-      const promptPreview = String(body.prompt ?? "").slice(0, 60);
-      log.info("IMAGE", `${provider}/${model} (black-forest-labs) | prompt: "${promptPreview}..."`);
+      log.info(
+        "IMAGE",
+        `${provider}/${model} (black-forest-labs) | prompt_length=${String(body.prompt ?? "").length}`
+      );
     }
 
     const response = await fetch(`${providerConfig.baseUrl.replace(/\/$/, "")}${endpoint}`, {
@@ -1662,7 +1842,10 @@ async function handleBlackForestLabsImageGeneration({
     if (!response.ok) {
       const errorText = await response.text();
       if (log)
-        log.error("IMAGE", `${provider} error ${response.status}: ${errorText.slice(0, 200)}`);
+        log.error(
+          "IMAGE",
+          `${provider} error ${response.status}: ${formatImageProviderErrorForLog(errorText)}`
+        );
       return saveImageErrorResult({
         provider,
         model,
@@ -1694,7 +1877,11 @@ async function handleBlackForestLabsImageGeneration({
       images,
     });
   } catch (err) {
-    if (log) log.error("IMAGE", `${provider} fetch error: ${err.message}`);
+    if (log)
+      log.error(
+        "IMAGE",
+        `${provider} fetch error: ${sanitizeErrorMessage((err as Error).message || err)}`
+      );
     return saveImageErrorResult({
       provider,
       model,
@@ -1726,8 +1913,10 @@ async function handleRecraftImageGeneration({
   if (body.style !== undefined) upstreamBody.style = body.style;
 
   if (log) {
-    const promptPreview = String(body.prompt ?? "").slice(0, 60);
-    log.info("IMAGE", `${provider}/${model} (recraft) | prompt: "${promptPreview}..."`);
+    log.info(
+      "IMAGE",
+      `${provider}/${model} (recraft) | prompt_length=${String(body.prompt ?? "").length}`
+    );
   }
 
   try {
@@ -1746,7 +1935,10 @@ async function handleRecraftImageGeneration({
     if (!response.ok) {
       const errorText = await response.text();
       if (log)
-        log.error("IMAGE", `${provider} error ${response.status}: ${errorText.slice(0, 200)}`);
+        log.error(
+          "IMAGE",
+          `${provider} error ${response.status}: ${formatImageProviderErrorForLog(errorText)}`
+        );
       return saveImageErrorResult({
         provider,
         model,
@@ -1769,7 +1961,11 @@ async function handleRecraftImageGeneration({
       images,
     });
   } catch (err) {
-    if (log) log.error("IMAGE", `${provider} fetch error: ${err.message}`);
+    if (log)
+      log.error(
+        "IMAGE",
+        `${provider} fetch error: ${sanitizeErrorMessage((err as Error).message || err)}`
+      );
     return saveImageErrorResult({
       provider,
       model,
@@ -1813,8 +2009,10 @@ async function handleTopazImageGeneration({
     }
 
     if (log) {
-      const promptPreview = String(body.prompt ?? "enhance image").slice(0, 60);
-      log.info("IMAGE", `${provider}/${model} (topaz) | prompt: "${promptPreview}..."`);
+      log.info(
+        "IMAGE",
+        `${provider}/${model} (topaz) | prompt_length=${String(body.prompt ?? "enhance image").length}`
+      );
     }
 
     const response = await fetch(`${providerConfig.baseUrl.replace(/\/$/, "")}/image/v1/enhance`, {
@@ -1829,7 +2027,10 @@ async function handleTopazImageGeneration({
     if (!response.ok) {
       const errorText = await response.text();
       if (log)
-        log.error("IMAGE", `${provider} error ${response.status}: ${errorText.slice(0, 200)}`);
+        log.error(
+          "IMAGE",
+          `${provider} error ${response.status}: ${formatImageProviderErrorForLog(errorText)}`
+        );
       return saveImageErrorResult({
         provider,
         model,
@@ -1857,7 +2058,11 @@ async function handleTopazImageGeneration({
       images,
     });
   } catch (err) {
-    if (log) log.error("IMAGE", `${provider} fetch error: ${err.message}`);
+    if (log)
+      log.error(
+        "IMAGE",
+        `${provider} fetch error: ${sanitizeErrorMessage((err as Error).message || err)}`
+      );
     return saveImageErrorResult({
       provider,
       model,
@@ -2195,6 +2400,7 @@ async function handleCodexImageGeneration({
   credentials,
   log,
   signal = null,
+  trace = null,
 }) {
   const startTime = Date.now();
   const prompt = typeof body.prompt === "string" ? body.prompt : "";
@@ -2270,19 +2476,20 @@ async function handleCodexImageGeneration({
     "User-Agent": getCodexUserAgent(),
     originator: "codex_cli_rs",
   };
+  if (typeof trace?.clientRequestId === "string") {
+    headers["X-Client-Request-Id"] = trace.clientRequestId;
+  }
   if (typeof workspaceId === "string" && workspaceId) {
     headers["chatgpt-account-id"] = workspaceId;
     headers["session_id"] = workspaceId;
   }
 
   if (log) {
-    log.info(
-      "IMAGE",
-      `${provider}/${model} (codex-responses) | prompt: "${prompt.slice(0, 60)}..."`
-    );
+    log.info("IMAGE", `${provider}/${model} (codex-responses) | prompt_length=${prompt.length}`);
   }
 
   const collected: Array<{ b64_json: string; revised_prompt?: string }> = [];
+  let upstreamRequestId: string | null = null;
   const timeoutMs = normalizePositiveNumber(body.timeout_ms, DEFAULT_IMAGE_GENERATION_TIMEOUT_MS);
   for (let i = 0; i < requestedCount; i++) {
     let response: Response;
@@ -2297,7 +2504,11 @@ async function handleCodexImageGeneration({
         signal: fetchSignal,
       });
     } catch (err) {
-      if (log) log.error("IMAGE", `${provider} fetch error: ${(err as Error).message}`);
+      if (log)
+        log.error(
+          "IMAGE",
+          `${provider} fetch error: ${sanitizeErrorMessage((err as Error).message || err)}`
+        );
       return saveImageErrorResult({
         provider,
         model,
@@ -2308,18 +2519,25 @@ async function handleCodexImageGeneration({
       });
     }
 
+    upstreamRequestId = response.headers.get("x-request-id") || upstreamRequestId;
     if (!response.ok) {
       const errorText = await response.text();
       if (log)
-        log.error("IMAGE", `${provider} error ${response.status}: ${errorText.slice(0, 200)}`);
-      return saveImageErrorResult({
-        provider,
-        model,
-        status: response.status,
-        startTime,
-        error: errorText,
-        requestBody: upstreamBody,
-      });
+        log.error(
+          "IMAGE",
+          `${provider} error ${response.status}: ${formatImageProviderErrorForLog(errorText)}`
+        );
+      return {
+        ...saveImageErrorResult({
+          provider,
+          model,
+          status: response.status,
+          startTime,
+          error: errorText,
+          requestBody: upstreamBody,
+        }),
+        upstreamRequestId,
+      };
     }
 
     const rawSSE = await response.text();
@@ -2343,7 +2561,9 @@ async function handleCodexImageGeneration({
     }
   }
 
-  const wantsUrl = body.response_format !== "b64_json";
+  // GPT Image returns base64 by default. Preserve that OpenAI-compatible
+  // behavior and only synthesize a data URL when the caller explicitly asks.
+  const wantsUrl = body.response_format === "url";
   const data = wantsUrl
     ? collected.map((item) => ({
         url: `data:image/png;base64,${item.b64_json}`,
@@ -2351,14 +2571,17 @@ async function handleCodexImageGeneration({
       }))
     : collected;
 
-  return saveImageSuccessResult({
-    provider,
-    model,
-    startTime,
-    requestBody: upstreamBody,
-    responseBody: { images_count: data.length },
-    images: data,
-  });
+  return {
+    ...saveImageSuccessResult({
+      provider,
+      model,
+      startTime,
+      requestBody: upstreamBody,
+      responseBody: { images_count: data.length },
+      images: data,
+    }),
+    upstreamRequestId,
+  };
 }
 
 function saveImageSuccessResult({
@@ -2421,15 +2644,20 @@ async function fetchImageEndpoint(url, headers, body, provider, log, signal = nu
       ...(signal instanceof AbortSignal ? { signal } : {}),
     });
 
+    const upstreamRequestId = response.headers.get("x-request-id");
     if (!response.ok) {
       const errorText = await response.text();
       if (log) {
-        log.error("IMAGE", `${provider} error ${response.status}: ${errorText.slice(0, 200)}`);
+        log.error(
+          "IMAGE",
+          `${provider} error ${response.status}: ${formatImageProviderErrorForLog(errorText)}`
+        );
       }
       return {
         success: false,
         status: response.status,
-        error: errorText,
+        error: sanitizeImageProviderError(errorText),
+        upstreamRequestId,
       };
     }
 
@@ -2442,10 +2670,14 @@ async function fetchImageEndpoint(url, headers, body, provider, log, signal = nu
         created: data.created || Math.floor(Date.now() / 1000),
         data: data.data || [],
       },
+      upstreamRequestId,
     };
   } catch (err) {
     if (log) {
-      log.error("IMAGE", `${provider} fetch error: ${err.message}`);
+      log.error(
+        "IMAGE",
+        `${provider} fetch error: ${sanitizeErrorMessage((err as Error).message || err)}`
+      );
     }
     return {
       success: false,
@@ -2481,8 +2713,10 @@ async function handleHyperbolicImageGeneration({
   };
 
   if (log) {
-    const promptPreview = String(body.prompt ?? "").slice(0, 60);
-    log.info("IMAGE", `${provider}/${model} (hyperbolic) | prompt: "${promptPreview}..."`);
+    log.info(
+      "IMAGE",
+      `${provider}/${model} (hyperbolic) | prompt_length=${String(body.prompt ?? "").length}`
+    );
   }
 
   try {
@@ -2498,7 +2732,10 @@ async function handleHyperbolicImageGeneration({
     if (!response.ok) {
       const errorText = await response.text();
       if (log)
-        log.error("IMAGE", `${provider} error ${response.status}: ${errorText.slice(0, 200)}`);
+        log.error(
+          "IMAGE",
+          `${provider} error ${response.status}: ${formatImageProviderErrorForLog(errorText)}`
+        );
 
       saveCallLog({
         method: "POST",
@@ -2535,7 +2772,11 @@ async function handleHyperbolicImageGeneration({
       data: { created: Math.floor(Date.now() / 1000), data: images },
     };
   } catch (err) {
-    if (log) log.error("IMAGE", `${provider} fetch error: ${err.message}`);
+    if (log)
+      log.error(
+        "IMAGE",
+        `${provider} fetch error: ${sanitizeErrorMessage((err as Error).message || err)}`
+      );
     saveCallLog({
       method: "POST",
       path: "/v1/images/generations",
@@ -2607,10 +2848,9 @@ async function handleNanoBananaImageGeneration({
       };
 
   if (log) {
-    const promptPreview = String(body.prompt ?? "").slice(0, 60);
     log.info(
       "IMAGE",
-      `${provider}/${model} (nanobanana ${isPro ? "pro" : "flash"}) | prompt: "${promptPreview}..."`
+      `${provider}/${model} (nanobanana ${isPro ? "pro" : "flash"}) | prompt_length=${String(body.prompt ?? "").length}`
     );
   }
 
@@ -2629,7 +2869,7 @@ async function handleNanoBananaImageGeneration({
       if (log) {
         log.error(
           "IMAGE",
-          `${provider} submit error ${submitResp.status}: ${errorText.slice(0, 200)}`
+          `${provider} submit error ${submitResp.status}: ${formatImageProviderErrorForLog(errorText)}`
         );
       }
 
@@ -2728,7 +2968,7 @@ async function handleNanoBananaImageGeneration({
         if (log) {
           log.error(
             "IMAGE",
-            `${provider} poll error ${pollResp.status}: ${errorText.slice(0, 200)}`
+            `${provider} poll error ${pollResp.status}: ${formatImageProviderErrorForLog(errorText)}`
           );
         }
         return { success: false, status: pollResp.status, error: errorText };
@@ -2796,7 +3036,11 @@ async function handleNanoBananaImageGeneration({
 
     return { success: false, status: 504, error: timeoutError };
   } catch (err) {
-    if (log) log.error("IMAGE", `${provider} fetch error: ${err.message}`);
+    if (log)
+      log.error(
+        "IMAGE",
+        `${provider} fetch error: ${sanitizeErrorMessage((err as Error).message || err)}`
+      );
     saveCallLog({
       method: "POST",
       path: "/v1/images/generations",
@@ -2941,8 +3185,10 @@ async function handleSDWebUIImageGeneration({ model, provider, providerConfig, b
   };
 
   if (log) {
-    const promptPreview = String(body.prompt ?? "").slice(0, 60);
-    log.info("IMAGE", `${provider}/${model} (sdwebui) | prompt: "${promptPreview}..."`);
+    log.info(
+      "IMAGE",
+      `${provider}/${model} (sdwebui) | prompt_length=${String(body.prompt ?? "").length}`
+    );
   }
 
   try {
@@ -2955,7 +3201,10 @@ async function handleSDWebUIImageGeneration({ model, provider, providerConfig, b
     if (!response.ok) {
       const errorText = await response.text();
       if (log)
-        log.error("IMAGE", `${provider} error ${response.status}: ${errorText.slice(0, 200)}`);
+        log.error(
+          "IMAGE",
+          `${provider} error ${response.status}: ${formatImageProviderErrorForLog(errorText)}`
+        );
 
       saveCallLog({
         method: "POST",
@@ -3062,8 +3311,10 @@ async function handleComfyUIImageGeneration({ model, provider, providerConfig, b
   };
 
   if (log) {
-    const promptPreview = String(body.prompt ?? "").slice(0, 60);
-    log.info("IMAGE", `${provider}/${model} (comfyui) | prompt: "${promptPreview}..."`);
+    log.info(
+      "IMAGE",
+      `${provider}/${model} (comfyui) | prompt_length=${String(body.prompt ?? "").length}`
+    );
   }
 
   try {
@@ -3128,7 +3379,7 @@ async function handleHaiperImageGeneration({
   const token = credentials?.apiKey || "";
   const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
   if (log) {
-    log.info("IMAGE", `${provider}/${model} (haiper) | prompt: "${prompt.slice(0, 60)}..."`);
+    log.info("IMAGE", `${provider}/${model} (haiper) | prompt_length=${prompt.length}`);
   }
   try {
     const res = await fetch(providerConfig.baseUrl, {
@@ -3240,7 +3491,7 @@ async function handleLeonardoImageGeneration({
   const token = credentials?.apiKey || "";
   const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
   if (log) {
-    log.info("IMAGE", `${provider}/${model} (leonardo) | prompt: "${prompt.slice(0, 60)}..."`);
+    log.info("IMAGE", `${provider}/${model} (leonardo) | prompt_length=${prompt.length}`);
   }
   try {
     const res = await fetch(providerConfig.baseUrl, {
@@ -3372,7 +3623,7 @@ async function handleIdeogramImageGeneration({
   const token = credentials?.apiKey || "";
   const prompt = typeof body.prompt === "string" ? body.prompt : String(body.prompt ?? "");
   if (log) {
-    log.info("IMAGE", `${provider}/${model} (ideogram) | prompt: "${prompt.slice(0, 60)}..."`);
+    log.info("IMAGE", `${provider}/${model} (ideogram) | prompt_length=${prompt.length}`);
   }
   try {
     const res = await fetch(providerConfig.baseUrl, {
@@ -3490,10 +3741,9 @@ async function handleImagen3ImageGeneration({
   };
 
   if (log) {
-    const promptPreview = String(body.prompt ?? "").slice(0, 60);
     log.info(
       "IMAGE",
-      `${provider}/${model} (imagen3) | prompt: "${promptPreview}..." | aspect_ratio: ${aspectRatio}`
+      `${provider}/${model} (imagen3) | prompt_length=${String(body.prompt ?? "").length} | aspect_ratio: ${aspectRatio}`
     );
   }
 
@@ -3510,7 +3760,10 @@ async function handleImagen3ImageGeneration({
     if (!response.ok) {
       const errorText = await response.text();
       if (log)
-        log.error("IMAGE", `${provider} error ${response.status}: ${errorText.slice(0, 200)}`);
+        log.error(
+          "IMAGE",
+          `${provider} error ${response.status}: ${formatImageProviderErrorForLog(errorText)}`
+        );
 
       saveCallLog({
         method: "POST",

@@ -43,6 +43,7 @@ const QUOTA_PATTERNS: ReadonlyArray<RegExp> = [
   /out of credits/i,
   /hard.?limit/i,
   /plan.*limit/i,
+  /usage[_\s-]*limit(?:[_\s-]*(?:has[_\s-]*been|is))?[_\s-]*(?:reached|exceeded)/i,
 ];
 
 /**

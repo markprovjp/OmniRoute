@@ -8,6 +8,10 @@ import { getDbInstance, rowToCamel } from "./core";
 import { backupDbFile } from "./backup";
 import { registerDbStateResetter } from "./stateReset";
 import { setNoLog } from "../compliance";
+import {
+  DEFAULT_IMAGE_GENERATION_POLICY,
+  IMAGE_GENERATION_ALLOWED_SIZES,
+} from "@/shared/constants/imageGeneration";
 
 // ──────────────── Performance Optimizations ────────────────
 
@@ -45,6 +49,12 @@ export interface CreateApiKeyOptions {
   maxRequestsPerMinute?: number | null;
   expiresAt?: string | null;
   commercialKey?: boolean;
+  imageGenerationEnabled?: boolean;
+  imageMaxRequestsPerMinute?: number;
+  imageMaxRequestsPerDay?: number;
+  imageMaxConcurrent?: number;
+  imageAllowHighQuality?: boolean;
+  imageAllowedSizes?: string[];
 }
 
 export interface ApiKeyCustomerUsageMetadata {
@@ -90,6 +100,12 @@ interface ApiKeyMetadata {
   hourlyTokenLimit: number | null;
   tokenUsed: number;
   commercialKey: boolean;
+  imageGenerationEnabled: boolean;
+  imageMaxRequestsPerMinute: number;
+  imageMaxRequestsPerDay: number;
+  imageMaxConcurrent: number;
+  imageAllowHighQuality: boolean;
+  imageAllowedSizes: string[];
 }
 
 interface ApiKeyRow extends JsonRecord {
@@ -144,6 +160,12 @@ interface ApiKeyView extends JsonRecord {
   isActive: boolean;
   accessSchedule: AccessSchedule | null;
   rateLimits: RateLimitRule[] | null;
+  imageGenerationEnabled: boolean;
+  imageMaxRequestsPerMinute: number;
+  imageMaxRequestsPerDay: number;
+  imageMaxConcurrent: number;
+  imageAllowHighQuality: boolean;
+  imageAllowedSizes: string[];
 }
 
 // LRU cache for API key validation (valid keys only)
@@ -183,6 +205,31 @@ const API_KEY_COLUMN_FALLBACKS = [
   { name: "hourly_token_limit", definition: "hourly_token_limit INTEGER" },
   { name: "token_used", definition: "token_used INTEGER NOT NULL DEFAULT 0" },
   { name: "commercial_key", definition: "commercial_key INTEGER NOT NULL DEFAULT 0" },
+  {
+    name: "image_generation_enabled",
+    definition: "image_generation_enabled INTEGER NOT NULL DEFAULT 1",
+  },
+  {
+    name: "image_max_requests_per_minute",
+    definition: "image_max_requests_per_minute INTEGER NOT NULL DEFAULT 2",
+  },
+  {
+    name: "image_max_requests_per_day",
+    definition: "image_max_requests_per_day INTEGER NOT NULL DEFAULT 10",
+  },
+  {
+    name: "image_max_concurrent",
+    definition: "image_max_concurrent INTEGER NOT NULL DEFAULT 1",
+  },
+  {
+    name: "image_allow_high_quality",
+    definition: "image_allow_high_quality INTEGER NOT NULL DEFAULT 0",
+  },
+  {
+    name: "image_allowed_sizes",
+    definition:
+      'image_allowed_sizes TEXT NOT NULL DEFAULT \'["1024x1024","1536x1024","1024x1536"]\'',
+  },
 ] as const;
 
 // Cache for model permission checks
@@ -385,10 +432,10 @@ function getPreparedStatements(db: ApiKeysDbLike): ApiKeysStatements {
       "SELECT id, expires_at, revoked_at, is_active, is_banned FROM api_keys WHERE key = ? OR key_hash = ?"
     );
     _stmtGetKeyMetadata = db.prepare<ApiKeyRow>(
-      "SELECT id, name, machine_id, allowed_models, allowed_connections, no_log, auto_resolve, is_active, access_schedule, max_requests_per_day, max_requests_per_minute, max_sessions, revoked_at, expires_at, ip_allowlist, scopes, rate_limits, is_banned, key_hash, customer_name, internal_note, token_limit, daily_token_limit, hourly_token_limit, token_used, commercial_key FROM api_keys WHERE key = ? OR key_hash = ?"
+      "SELECT id, name, machine_id, allowed_models, allowed_connections, no_log, auto_resolve, is_active, access_schedule, max_requests_per_day, max_requests_per_minute, max_sessions, revoked_at, expires_at, ip_allowlist, scopes, rate_limits, is_banned, key_hash, customer_name, internal_note, token_limit, daily_token_limit, hourly_token_limit, token_used, commercial_key, image_generation_enabled, image_max_requests_per_minute, image_max_requests_per_day, image_max_concurrent, image_allow_high_quality, image_allowed_sizes FROM api_keys WHERE key = ? OR key_hash = ?"
     );
     _stmtInsertKey = db.prepare(
-      "INSERT INTO api_keys (id, name, key, machine_id, allowed_models, no_log, created_at, key_prefix, key_hash, scopes, customer_name, internal_note, token_limit, daily_token_limit, hourly_token_limit, token_used, commercial_key, max_requests_per_day, max_requests_per_minute, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO api_keys (id, name, key, machine_id, allowed_models, no_log, created_at, key_prefix, key_hash, scopes, customer_name, internal_note, token_limit, daily_token_limit, hourly_token_limit, token_used, commercial_key, max_requests_per_day, max_requests_per_minute, expires_at, image_generation_enabled, image_max_requests_per_minute, image_max_requests_per_day, image_max_concurrent, image_allow_high_quality, image_allowed_sizes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
     _stmtDeleteKey = db.prepare("DELETE FROM api_keys WHERE id = ?");
   }
@@ -437,6 +484,27 @@ export async function getApiKeys() {
     camelRow.hourlyTokenLimit = parseNullableNonNegativeInt(camelRow.hourlyTokenLimit);
     camelRow.tokenUsed = parseNonNegativeInt(camelRow.tokenUsed);
     camelRow.commercialKey = parseCommercialKey(camelRow.commercialKey);
+    camelRow.imageGenerationEnabled = parseBooleanDefault(
+      camelRow.imageGenerationEnabled,
+      DEFAULT_IMAGE_GENERATION_POLICY.enabled
+    );
+    camelRow.imageMaxRequestsPerMinute = parseNonNegativeIntWithDefault(
+      camelRow.imageMaxRequestsPerMinute,
+      DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerMinute
+    );
+    camelRow.imageMaxRequestsPerDay = parseNonNegativeIntWithDefault(
+      camelRow.imageMaxRequestsPerDay,
+      DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerDay
+    );
+    camelRow.imageMaxConcurrent = parsePositiveIntWithDefault(
+      camelRow.imageMaxConcurrent,
+      DEFAULT_IMAGE_GENERATION_POLICY.maxConcurrent
+    );
+    camelRow.imageAllowHighQuality = parseBooleanDefault(
+      camelRow.imageAllowHighQuality,
+      DEFAULT_IMAGE_GENERATION_POLICY.allowHighQuality
+    );
+    camelRow.imageAllowedSizes = parseImageAllowedSizes(camelRow.imageAllowedSizes);
     if (typeof camelRow.id === "string" && camelRow.id.length > 0) {
       setNoLog(camelRow.id, camelRow.noLog === true);
     }
@@ -465,6 +533,27 @@ export async function getApiKeyById(id: string) {
   camelRow.hourlyTokenLimit = parseNullableNonNegativeInt(camelRow.hourlyTokenLimit);
   camelRow.tokenUsed = parseNonNegativeInt(camelRow.tokenUsed);
   camelRow.commercialKey = parseCommercialKey(camelRow.commercialKey);
+  camelRow.imageGenerationEnabled = parseBooleanDefault(
+    camelRow.imageGenerationEnabled,
+    DEFAULT_IMAGE_GENERATION_POLICY.enabled
+  );
+  camelRow.imageMaxRequestsPerMinute = parseNonNegativeIntWithDefault(
+    camelRow.imageMaxRequestsPerMinute,
+    DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerMinute
+  );
+  camelRow.imageMaxRequestsPerDay = parseNonNegativeIntWithDefault(
+    camelRow.imageMaxRequestsPerDay,
+    DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerDay
+  );
+  camelRow.imageMaxConcurrent = parsePositiveIntWithDefault(
+    camelRow.imageMaxConcurrent,
+    DEFAULT_IMAGE_GENERATION_POLICY.maxConcurrent
+  );
+  camelRow.imageAllowHighQuality = parseBooleanDefault(
+    camelRow.imageAllowHighQuality,
+    DEFAULT_IMAGE_GENERATION_POLICY.allowHighQuality
+  );
+  camelRow.imageAllowedSizes = parseImageAllowedSizes(camelRow.imageAllowedSizes);
   if (typeof camelRow.id === "string" && camelRow.id.length > 0) {
     setNoLog(camelRow.id, camelRow.noLog === true);
   }
@@ -642,6 +731,28 @@ function parseCommercialKey(value: unknown): boolean {
   return value === 1 || value === "1" || value === true;
 }
 
+function parseBooleanDefault(value: unknown, fallback: boolean): boolean {
+  if (value === true || value === 1 || value === "1") return true;
+  if (value === false || value === 0 || value === "0") return false;
+  return fallback;
+}
+
+function parseNonNegativeIntWithDefault(value: unknown, fallback: number): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? Math.floor(numeric) : fallback;
+}
+
+function parsePositiveIntWithDefault(value: unknown, fallback: number): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback;
+}
+
+function parseImageAllowedSizes(value: unknown): string[] {
+  const allowed = new Set<string>(IMAGE_GENERATION_ALLOWED_SIZES);
+  const parsed = parseStringList(value).filter((size) => allowed.has(size));
+  return parsed.length > 0 ? parsed : [...DEFAULT_IMAGE_GENERATION_POLICY.allowedSizes];
+}
+
 async function hashKey(key: string): Promise<string> {
   if (!key || typeof key !== "string") return "";
   // CodeQL: This is intentionally SHA-256, NOT password hashing. API keys are
@@ -657,7 +768,24 @@ function normalizeCreateOptions(
 ): Required<Pick<CreateApiKeyOptions, "commercialKey">> &
   Omit<CreateApiKeyOptions, "commercialKey"> & { scopes: string[] } {
   if (Array.isArray(scopesOrOptions)) {
-    return { scopes: scopesOrOptions, commercialKey: false };
+    return {
+      scopes: scopesOrOptions,
+      commercialKey: false,
+      customerName: null,
+      internalNote: null,
+      tokenLimit: null,
+      dailyTokenLimit: null,
+      hourlyTokenLimit: null,
+      maxRequestsPerDay: null,
+      maxRequestsPerMinute: null,
+      expiresAt: null,
+      imageGenerationEnabled: DEFAULT_IMAGE_GENERATION_POLICY.enabled,
+      imageMaxRequestsPerMinute: DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerMinute,
+      imageMaxRequestsPerDay: DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerDay,
+      imageMaxConcurrent: DEFAULT_IMAGE_GENERATION_POLICY.maxConcurrent,
+      imageAllowHighQuality: DEFAULT_IMAGE_GENERATION_POLICY.allowHighQuality,
+      imageAllowedSizes: [...DEFAULT_IMAGE_GENERATION_POLICY.allowedSizes],
+    };
   }
 
   return {
@@ -671,6 +799,20 @@ function normalizeCreateOptions(
     maxRequestsPerMinute: scopesOrOptions?.maxRequestsPerMinute ?? null,
     expiresAt: scopesOrOptions?.expiresAt ?? null,
     commercialKey: scopesOrOptions?.commercialKey === true,
+    imageGenerationEnabled:
+      scopesOrOptions?.imageGenerationEnabled ?? DEFAULT_IMAGE_GENERATION_POLICY.enabled,
+    imageMaxRequestsPerMinute:
+      scopesOrOptions?.imageMaxRequestsPerMinute ??
+      DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerMinute,
+    imageMaxRequestsPerDay:
+      scopesOrOptions?.imageMaxRequestsPerDay ?? DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerDay,
+    imageMaxConcurrent:
+      scopesOrOptions?.imageMaxConcurrent ?? DEFAULT_IMAGE_GENERATION_POLICY.maxConcurrent,
+    imageAllowHighQuality:
+      scopesOrOptions?.imageAllowHighQuality ?? DEFAULT_IMAGE_GENERATION_POLICY.allowHighQuality,
+    imageAllowedSizes: Array.isArray(scopesOrOptions?.imageAllowedSizes)
+      ? scopesOrOptions.imageAllowedSizes
+      : [...DEFAULT_IMAGE_GENERATION_POLICY.allowedSizes],
   };
 }
 
@@ -718,6 +860,21 @@ export async function createApiKey(
     maxRequestsPerDay,
     maxRequestsPerMinute,
     expiresAt: parseNullableTimestamp(options.expiresAt),
+    imageGenerationEnabled: options.imageGenerationEnabled !== false,
+    imageMaxRequestsPerMinute: parseNonNegativeIntWithDefault(
+      options.imageMaxRequestsPerMinute,
+      DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerMinute
+    ),
+    imageMaxRequestsPerDay: parseNonNegativeIntWithDefault(
+      options.imageMaxRequestsPerDay,
+      DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerDay
+    ),
+    imageMaxConcurrent: parsePositiveIntWithDefault(
+      options.imageMaxConcurrent,
+      DEFAULT_IMAGE_GENERATION_POLICY.maxConcurrent
+    ),
+    imageAllowHighQuality: options.imageAllowHighQuality === true,
+    imageAllowedSizes: parseImageAllowedSizes(options.imageAllowedSizes),
   };
 
   const stmt = getPreparedStatements(db);
@@ -741,7 +898,17 @@ export async function createApiKey(
     apiKey.commercialKey ? 1 : 0,
     apiKey.maxRequestsPerDay,
     apiKey.maxRequestsPerMinute,
-    apiKey.expiresAt
+    apiKey.expiresAt,
+    apiKey.imageGenerationEnabled ? 1 : 0,
+    apiKey.imageMaxRequestsPerMinute,
+    apiKey.imageMaxRequestsPerDay,
+    apiKey.imageMaxConcurrent,
+    apiKey.imageAllowHighQuality ? 1 : 0,
+    JSON.stringify(
+      apiKey.imageAllowedSizes.length > 0
+        ? apiKey.imageAllowedSizes
+        : DEFAULT_IMAGE_GENERATION_POLICY.allowedSizes
+    )
   );
   setNoLog(apiKey.id, false);
 
@@ -811,6 +978,12 @@ export async function updateApiKeyPermissions(
         // T08: max concurrent sessions for this key (0 = unlimited)
         maxSessions?: number | null;
         scopes?: string[] | null;
+        imageGenerationEnabled?: boolean;
+        imageMaxRequestsPerMinute?: number;
+        imageMaxRequestsPerDay?: number;
+        imageMaxConcurrent?: number;
+        imageAllowHighQuality?: boolean;
+        imageAllowedSizes?: string[];
       }
 ) {
   const db = getDbInstance() as ApiKeysDbLike;
@@ -839,6 +1012,12 @@ export async function updateApiKeyPermissions(
           hourlyTokenLimit: update.hourlyTokenLimit,
           maxSessions: (update as { maxSessions?: number | null }).maxSessions,
           scopes: (update as { scopes?: string[] | null }).scopes,
+          imageGenerationEnabled: update.imageGenerationEnabled,
+          imageMaxRequestsPerMinute: update.imageMaxRequestsPerMinute,
+          imageMaxRequestsPerDay: update.imageMaxRequestsPerDay,
+          imageMaxConcurrent: update.imageMaxConcurrent,
+          imageAllowHighQuality: update.imageAllowHighQuality,
+          imageAllowedSizes: update.imageAllowedSizes,
         };
 
   if (
@@ -860,7 +1039,13 @@ export async function updateApiKeyPermissions(
     normalized.dailyTokenLimit === undefined &&
     normalized.hourlyTokenLimit === undefined &&
     (normalized as Record<string, unknown>).maxSessions === undefined &&
-    (normalized as Record<string, unknown>).scopes === undefined
+    (normalized as Record<string, unknown>).scopes === undefined &&
+    normalized.imageGenerationEnabled === undefined &&
+    normalized.imageMaxRequestsPerMinute === undefined &&
+    normalized.imageMaxRequestsPerDay === undefined &&
+    normalized.imageMaxConcurrent === undefined &&
+    normalized.imageAllowHighQuality === undefined &&
+    normalized.imageAllowedSizes === undefined
   ) {
     return false;
   }
@@ -887,6 +1072,12 @@ export async function updateApiKeyPermissions(
     dailyTokenLimit?: number | null;
     hourlyTokenLimit?: number | null;
     scopes?: string;
+    imageGenerationEnabled?: number;
+    imageMaxRequestsPerMinute?: number;
+    imageMaxRequestsPerDay?: number;
+    imageMaxConcurrent?: number;
+    imageAllowHighQuality?: number;
+    imageAllowedSizes?: string;
   } = { id };
 
   if (normalized.name !== undefined) {
@@ -988,6 +1179,36 @@ export async function updateApiKeyPermissions(
   if (scopesUpdate !== undefined) {
     updates.push("scopes = @scopes");
     params.scopes = JSON.stringify(Array.isArray(scopesUpdate) ? scopesUpdate : []);
+  }
+
+  if (normalized.imageGenerationEnabled !== undefined) {
+    updates.push("image_generation_enabled = @imageGenerationEnabled");
+    params.imageGenerationEnabled = normalized.imageGenerationEnabled ? 1 : 0;
+  }
+
+  if (normalized.imageMaxRequestsPerMinute !== undefined) {
+    updates.push("image_max_requests_per_minute = @imageMaxRequestsPerMinute");
+    params.imageMaxRequestsPerMinute = Math.max(0, normalized.imageMaxRequestsPerMinute);
+  }
+
+  if (normalized.imageMaxRequestsPerDay !== undefined) {
+    updates.push("image_max_requests_per_day = @imageMaxRequestsPerDay");
+    params.imageMaxRequestsPerDay = Math.max(0, normalized.imageMaxRequestsPerDay);
+  }
+
+  if (normalized.imageMaxConcurrent !== undefined) {
+    updates.push("image_max_concurrent = @imageMaxConcurrent");
+    params.imageMaxConcurrent = Math.max(1, normalized.imageMaxConcurrent);
+  }
+
+  if (normalized.imageAllowHighQuality !== undefined) {
+    updates.push("image_allow_high_quality = @imageAllowHighQuality");
+    params.imageAllowHighQuality = normalized.imageAllowHighQuality ? 1 : 0;
+  }
+
+  if (normalized.imageAllowedSizes !== undefined) {
+    updates.push("image_allowed_sizes = @imageAllowedSizes");
+    params.imageAllowedSizes = JSON.stringify(normalized.imageAllowedSizes);
   }
 
   const result = db.prepare(`UPDATE api_keys SET ${updates.join(", ")} WHERE id = @id`).run(params);
@@ -1251,6 +1472,12 @@ export async function getApiKeyMetadata(
       hourlyTokenLimit: null,
       tokenUsed: 0,
       commercialKey: false,
+      imageGenerationEnabled: false,
+      imageMaxRequestsPerMinute: 0,
+      imageMaxRequestsPerDay: 0,
+      imageMaxConcurrent: 1,
+      imageAllowHighQuality: false,
+      imageAllowedSizes: [...DEFAULT_IMAGE_GENERATION_POLICY.allowedSizes],
       scopes: ["manage"],
     };
   }
@@ -1316,6 +1543,29 @@ export async function getApiKeyMetadata(
     tokenUsed: parseNonNegativeInt(record.token_used ?? (record as JsonRecord).tokenUsed),
     commercialKey: parseCommercialKey(
       record.commercial_key ?? (record as JsonRecord).commercialKey
+    ),
+    imageGenerationEnabled: parseBooleanDefault(
+      record.image_generation_enabled ?? (record as JsonRecord).imageGenerationEnabled,
+      DEFAULT_IMAGE_GENERATION_POLICY.enabled
+    ),
+    imageMaxRequestsPerMinute: parseNonNegativeIntWithDefault(
+      record.image_max_requests_per_minute ?? (record as JsonRecord).imageMaxRequestsPerMinute,
+      DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerMinute
+    ),
+    imageMaxRequestsPerDay: parseNonNegativeIntWithDefault(
+      record.image_max_requests_per_day ?? (record as JsonRecord).imageMaxRequestsPerDay,
+      DEFAULT_IMAGE_GENERATION_POLICY.maxRequestsPerDay
+    ),
+    imageMaxConcurrent: parsePositiveIntWithDefault(
+      record.image_max_concurrent ?? (record as JsonRecord).imageMaxConcurrent,
+      DEFAULT_IMAGE_GENERATION_POLICY.maxConcurrent
+    ),
+    imageAllowHighQuality: parseBooleanDefault(
+      record.image_allow_high_quality ?? (record as JsonRecord).imageAllowHighQuality,
+      DEFAULT_IMAGE_GENERATION_POLICY.allowHighQuality
+    ),
+    imageAllowedSizes: parseImageAllowedSizes(
+      record.image_allowed_sizes ?? (record as JsonRecord).imageAllowedSizes
     ),
   };
 

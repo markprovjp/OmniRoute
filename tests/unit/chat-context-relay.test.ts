@@ -196,6 +196,147 @@ test("handleChat generates and injects context-relay handoffs across Codex accou
   await new Promise((resolve) => setTimeout(resolve, 50));
 });
 
+test("Codex usage_limit_reached fails over after one upstream attempt per account", async () => {
+  BaseExecutor.RETRY_CONFIG.maxAttempts = 2;
+  BaseExecutor.RETRY_CONFIG.delayMs = 1;
+
+  const primary = await seedCodexOAuthConnection({
+    name: "codex-quota-a",
+    email: "quota-a@example.com",
+    accessToken: "quota-token-a",
+    refreshToken: "quota-refresh-a",
+    workspaceId: "quota-ws-a",
+    priority: 1,
+  });
+  await seedCodexOAuthConnection({
+    name: "codex-quota-b",
+    email: "quota-b@example.com",
+    accessToken: "quota-token-b",
+    refreshToken: "quota-refresh-b",
+    workspaceId: "quota-ws-b",
+    priority: 2,
+  });
+
+  const attempts = { primary: 0, secondary: 0 };
+  globalThis.fetch = async (url, init = {}) => {
+    const urlString = String(url);
+    const authorization = new Headers(init.headers || {}).get("authorization") || "";
+    if (urlString.includes("/backend-api/wham/usage")) return buildQuotaResponse(20);
+
+    if (authorization === "Bearer quota-token-a") {
+      attempts.primary += 1;
+      return new Response(
+        JSON.stringify({
+          error: {
+            type: "usage_limit_reached",
+            message: "The usage limit has been reached",
+            resets_in_seconds: 3600,
+          },
+        }),
+        { status: 429, headers: { "content-type": "application/json" } }
+      );
+    }
+
+    attempts.secondary += 1;
+    return buildResponsesResponse("secondary account succeeded", "gpt-5.4");
+  };
+
+  const consoleMessages: string[] = [];
+  const originalConsoleLog = console.log;
+  console.log = (...args: unknown[]) => consoleMessages.push(args.map(String).join(" "));
+  let response: Response;
+  try {
+    response = await handleChat(
+      buildRequest({
+        url: "http://localhost/v1/responses",
+        headers: { "X-OmniRoute-No-Cache": "true" },
+        body: {
+          model: "codex/gpt-5.4",
+          stream: false,
+          input: "Fail over immediately on exhausted Codex quota",
+        },
+      })
+    );
+  } finally {
+    console.log = originalConsoleLog;
+  }
+  const payload = (await response.json()) as any;
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.output[0].content[0].text, "secondary account succeeded");
+  assert.equal(attempts.primary, 1);
+  assert.equal(attempts.secondary, 1);
+  assert.equal(
+    consoleMessages.some((message) => message.includes("[ERROR] [429]")),
+    false
+  );
+
+  const persistedPrimary = await providersDb.getProviderConnectionById(primary.id);
+  const scopeUntil = (persistedPrimary?.providerSpecificData as any)?.codexScopeRateLimitedUntil
+    ?.codex;
+  assert.equal(typeof scopeUntil, "string");
+  assert.ok(Date.parse(scopeUntil) - Date.now() > 55 * 60 * 1000);
+});
+
+test("Codex usage_limit_reached returns promptly without console ERROR spam when no fallback exists", async () => {
+  BaseExecutor.RETRY_CONFIG.maxAttempts = 2;
+  BaseExecutor.RETRY_CONFIG.delayMs = 1;
+
+  await seedCodexOAuthConnection({
+    name: "codex-quota-only",
+    email: "quota-only@example.com",
+    accessToken: "quota-only-token",
+    refreshToken: "quota-only-refresh",
+    workspaceId: "quota-only-ws",
+    priority: 1,
+  });
+
+  let upstreamAttempts = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/backend-api/wham/usage")) return buildQuotaResponse(20);
+    upstreamAttempts += 1;
+    return new Response(
+      JSON.stringify({
+        error: {
+          type: "usage_limit_reached",
+          message: "The usage limit has been reached",
+          resets_in_seconds: 3600,
+        },
+      }),
+      { status: 429, headers: { "content-type": "application/json" } }
+    );
+  };
+
+  const consoleMessages: string[] = [];
+  const originalConsoleLog = console.log;
+  console.log = (...args: unknown[]) => consoleMessages.push(args.map(String).join(" "));
+  const startedAt = Date.now();
+  let response: Response;
+  try {
+    response = await handleChat(
+      buildRequest({
+        url: "http://localhost/v1/responses",
+        headers: { "X-OmniRoute-No-Cache": "true" },
+        body: {
+          model: "codex/gpt-5.4",
+          stream: false,
+          input: "Return exhausted quota promptly",
+        },
+      })
+    );
+  } finally {
+    console.log = originalConsoleLog;
+  }
+
+  assert.equal(response.status, 429);
+  assert.equal(upstreamAttempts, 1);
+  assert.ok(Date.now() - startedAt < 1_000);
+  assert.equal(
+    consoleMessages.some((message) => message.includes("[ERROR] [429]")),
+    false
+  );
+});
+
 test("handleChat injects context-relay handoffs during live failover for Responses-native Codex requests", async () => {
   BaseExecutor.RETRY_CONFIG.delayMs = 1;
 

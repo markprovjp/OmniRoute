@@ -18,7 +18,7 @@ import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import * as log from "@/sse/utils/logger";
 import { toJsonErrorPayload } from "@/shared/utils/upstreamError";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
-import { v1ImageGenerationSchema } from "@/shared/validation/schemas";
+import { v1MediaGenerationSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 
 /**
@@ -67,7 +67,7 @@ export async function POST(request) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
   }
 
-  const validation = validateBody(v1ImageGenerationSchema, rawBody);
+  const validation = validateBody(v1MediaGenerationSchema, rawBody);
   if (isValidationFailure(validation)) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, validation.error.message);
   }

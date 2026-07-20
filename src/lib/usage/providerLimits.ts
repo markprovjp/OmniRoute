@@ -19,6 +19,12 @@ import { USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { getExecutor } from "@omniroute/open-sse/executors/index.ts";
 import { getUsageForProvider } from "@omniroute/open-sse/services/usage.ts";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
+import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
+import {
+  createProviderLimitsSingleFlight,
+  runProviderLimitsRefreshEngine,
+  type ProviderLimitsRefreshEvent,
+} from "./providerLimitsRefreshEngine";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -56,7 +62,18 @@ const PROVIDER_LIMITS_APIKEY_PROVIDERS = new Set([
   "deepseek",
 ]);
 const DEFAULT_PROVIDER_LIMITS_SYNC_INTERVAL_MINUTES = 70;
+const DEFAULT_REFRESH_GLOBAL_CONCURRENCY = 32;
+const DEFAULT_REFRESH_PER_PROVIDER_CONCURRENCY = 5;
+const DEFAULT_REFRESH_BATCH_SIZE = 25;
+const DEFAULT_REFRESH_FLUSH_INTERVAL_MS = 100;
 const PROVIDER_LIMITS_AUTO_SYNC_SETTING_KEY = "provider_limits_auto_sync_last_run";
+
+type ProviderLimitsLiveResult = {
+  connection: ProviderConnectionLike;
+  usage: JsonRecord;
+};
+
+const liveProviderLimitsSingleFlight = createProviderLimitsSingleFlight<ProviderLimitsLiveResult>();
 
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -257,6 +274,46 @@ async function syncClaudeBootstrapIfNeeded(
   };
 }
 
+function readBoundedInteger(
+  envName: string,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const parsed = Number.parseInt(process.env[envName] ?? "", 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(maximum, Math.max(minimum, parsed));
+}
+
+export function getProviderLimitsRefreshConfig() {
+  return {
+    globalConcurrency: readBoundedInteger(
+      "PROVIDER_LIMITS_REFRESH_GLOBAL_CONCURRENCY",
+      DEFAULT_REFRESH_GLOBAL_CONCURRENCY,
+      1,
+      256
+    ),
+    perProviderConcurrency: readBoundedInteger(
+      "PROVIDER_LIMITS_REFRESH_PER_PROVIDER_CONCURRENCY",
+      DEFAULT_REFRESH_PER_PROVIDER_CONCURRENCY,
+      1,
+      64
+    ),
+    batchSize: readBoundedInteger(
+      "PROVIDER_LIMITS_REFRESH_BATCH_SIZE",
+      DEFAULT_REFRESH_BATCH_SIZE,
+      1,
+      1_000
+    ),
+    flushIntervalMs: readBoundedInteger(
+      "PROVIDER_LIMITS_REFRESH_FLUSH_INTERVAL_MS",
+      DEFAULT_REFRESH_FLUSH_INTERVAL_MS,
+      10,
+      60_000
+    ),
+  };
+}
+
 export function getProviderLimitsSyncIntervalMinutes(): number {
   const raw = Number.parseInt(process.env.PROVIDER_LIMITS_SYNC_INTERVAL_MINUTES ?? "", 10);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_PROVIDER_LIMITS_SYNC_INTERVAL_MINUTES;
@@ -294,10 +351,16 @@ export async function fetchLiveProviderLimits(connectionId: string): Promise<{
 async function fetchLiveProviderLimitsWithOptions(
   connectionId: string,
   options: { forceRefresh?: boolean } = {}
-): Promise<{
-  connection: ProviderConnectionLike;
-  usage: JsonRecord;
-}> {
+): Promise<ProviderLimitsLiveResult> {
+  return liveProviderLimitsSingleFlight.run(connectionId, () =>
+    fetchLiveProviderLimitsUncached(connectionId, options)
+  );
+}
+
+async function fetchLiveProviderLimitsUncached(
+  connectionId: string,
+  options: { forceRefresh?: boolean } = {}
+): Promise<ProviderLimitsLiveResult> {
   let connection = (await getProviderConnectionById(
     connectionId
   )) as unknown as ProviderConnectionLike | null;
@@ -424,77 +487,85 @@ export async function fetchAndPersistProviderLimits(
   return { connection, usage, cache: newCache };
 }
 
-export async function syncAllProviderLimits(
-  options: {
-    source?: SyncSource;
-    concurrency?: number;
-  } = {}
-): Promise<{
+export interface SyncAllProviderLimitsOptions {
+  source?: SyncSource;
+  /** Backward-compatible alias for globalConcurrency. */
+  concurrency?: number;
+  globalConcurrency?: number;
+  perProviderConcurrency?: number;
+  batchSize?: number;
+  flushIntervalMs?: number;
+  onStart?: (total: number) => void | Promise<void>;
+  onProgress?: (
+    event: ProviderLimitsRefreshEvent<ProviderLimitsCacheEntry>
+  ) => void | Promise<void>;
+}
+
+export async function syncAllProviderLimits(options: SyncAllProviderLimitsOptions = {}): Promise<{
   total: number;
   succeeded: number;
   failed: number;
   caches: Record<string, ProviderLimitsCacheEntry>;
   errors: Record<string, string>;
+  peakGlobalConcurrency: number;
+  peakProviderConcurrency: Record<string, number>;
+  batchFlushes: number;
 }> {
-  const { source = "manual", concurrency = 5 } = options;
+  const source = options.source || "manual";
+  const defaults = getProviderLimitsRefreshConfig();
   const connections = (
     (await getProviderConnections({ isActive: true })) as unknown as ProviderConnectionLike[]
   ).filter(isSupportedUsageConnection);
-  const cacheEntries: Array<{ connectionId: string; entry: ProviderLimitsCacheEntry }> = [];
   const caches: Record<string, ProviderLimitsCacheEntry> = {};
   const errors: Record<string, string> = {};
+  await options.onStart?.(connections.length);
 
-  for (let i = 0; i < connections.length; i += concurrency) {
-    const chunk = connections.slice(i, i + concurrency);
-    const results = await Promise.allSettled(
-      chunk.map(async (connection) => {
-        const { usage } = await fetchLiveProviderLimitsWithOptions(connection.id, {
-          forceRefresh: source === "manual",
-        });
-        const cache = toProviderLimitsCacheEntry(usage, source);
-        return { connectionId: connection.id, cache };
-      })
-    );
+  const summary = await runProviderLimitsRefreshEngine<
+    ProviderConnectionLike,
+    ProviderLimitsCacheEntry
+  >({
+    connections,
+    globalConcurrency:
+      options.globalConcurrency ?? options.concurrency ?? defaults.globalConcurrency,
+    perProviderConcurrency: options.perProviderConcurrency ?? defaults.perProviderConcurrency,
+    batchSize: options.batchSize ?? defaults.batchSize,
+    flushIntervalMs: options.flushIntervalMs ?? defaults.flushIntervalMs,
+    refresh: async (connection) => {
+      const { usage } = await fetchLiveProviderLimitsWithOptions(connection.id, {
+        forceRefresh: source === "manual",
+      });
+      const cache = toProviderLimitsCacheEntry(usage, source);
 
-    results.forEach((result, index) => {
-      const connectionId = chunk[index]?.id;
-      if (!connectionId) return;
-
-      if (result.status === "fulfilled") {
-        const { cache } = result.value;
-        // Don't persist error-only entries; show prior cache or pass through.
-        if (!cache.quotas && cache.message) {
-          const previous = getProviderLimitsCache(connectionId);
-          if (previous?.quotas && Object.keys(previous.quotas).length > 0) {
-            caches[connectionId] = previous;
-          } else {
-            caches[connectionId] = cache;
-          }
-          return;
-        }
-        cacheEntries.push({ connectionId, entry: cache });
-        caches[connectionId] = cache;
-        return;
+      // Never replace a prior good snapshot with an error-only provider response.
+      if (!cache.quotas && cache.message) {
+        const previous = getProviderLimitsCache(connection.id);
+        if (previous?.quotas && Object.keys(previous.quotas).length > 0) return previous;
+        throw new Error(cache.message);
       }
-
-      const reason = result.reason as { message?: string } | undefined;
-      errors[connectionId] = reason?.message || "Failed to refresh provider limits";
-    });
-  }
-
-  if (cacheEntries.length > 0) {
-    setProviderLimitsCacheBatch(cacheEntries);
-  }
+      return cache;
+    },
+    persistBatch: (entries) => setProviderLimitsCacheBatch(entries),
+    formatError: (error) =>
+      (sanitizeErrorMessage(error) || "Failed to refresh provider limits").slice(0, 240),
+    onProgress: async (event) => {
+      if (event.status === "succeeded") caches[event.connectionId] = event.cache;
+      else errors[event.connectionId] = event.error;
+      await options.onProgress?.(event);
+    },
+  });
 
   if (source === "scheduled") {
     await setLastProviderLimitsAutoSyncTime(new Date().toISOString());
   }
 
   return {
-    total: connections.length,
-    succeeded: cacheEntries.length,
-    failed: connections.length - cacheEntries.length,
+    total: summary.total,
+    succeeded: summary.succeeded,
+    failed: summary.failed,
     caches,
     errors,
+    peakGlobalConcurrency: summary.peakGlobalConcurrency,
+    peakProviderConcurrency: summary.peakProviderConcurrency,
+    batchFlushes: summary.batchFlushes,
   };
 }

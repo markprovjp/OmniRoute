@@ -10,6 +10,12 @@ import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import * as log from "@/sse/utils/logger";
 import { toJsonErrorPayload } from "@/shared/utils/upstreamError";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
+import { requireManagedImageApiKey } from "@/shared/utils/imageGenerationAuth";
+import {
+  finishManagedImageRequest,
+  startManagedImageRequest,
+  withManagedImageRequestId,
+} from "@/shared/utils/imageGenerationControl";
 
 /**
  * /v1/images/edits — multipart edit endpoint matching OpenAI's images-edit API.
@@ -36,6 +42,15 @@ export async function OPTIONS() {
 }
 
 const PUBLIC_BASE_URL_HEADER_KEYS = ["host", "x-forwarded-host", "x-forwarded-proto"] as const;
+const MAX_IMAGE_EDIT_BYTES = 20 * 1024 * 1024;
+const MAX_IMAGE_EDIT_REQUEST_BYTES = 22 * 1024 * 1024;
+
+class ImageEditRequestTooLargeError extends Error {
+  constructor() {
+    super("Image edit request is too large");
+    this.name = "ImageEditRequestTooLargeError";
+  }
+}
 
 function publicBaseUrlHeaders(headers: Headers): Record<string, string> {
   const out: Record<string, string> = {};
@@ -44,6 +59,40 @@ function publicBaseUrlHeaders(headers: Headers): Record<string, string> {
     if (value !== null) out[key] = value;
   }
   return out;
+}
+
+async function readBoundedMultipartFormData(request: Request): Promise<FormData> {
+  if (!request.body) return request.formData();
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_IMAGE_EDIT_REQUEST_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new ImageEditRequestTooLargeError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  const contentType = request.headers.get("content-type");
+  const headers = new Headers();
+  if (contentType) headers.set("content-type", contentType);
+  return new Request(request.url, { method: "POST", headers, body }).formData();
 }
 
 async function readMultipartImage(formData: FormData): Promise<{
@@ -77,13 +126,24 @@ async function readMultipartImage(formData: FormData): Promise<{
 }
 
 export async function POST(request: Request) {
+  const authentication = await requireManagedImageApiKey(request);
+  if (!authentication.authenticated) return authentication.rejection;
+
+  const contentLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_EDIT_REQUEST_BYTES) {
+    return errorResponse(413, "Image edit request is too large");
+  }
+
   let formData: FormData;
   try {
-    formData = await request.formData();
-  } catch (err) {
+    formData = await readBoundedMultipartFormData(request);
+  } catch (error) {
+    if (error instanceof ImageEditRequestTooLargeError) {
+      return errorResponse(413, "Image edit request is too large");
+    }
     log.warn(
       "IMAGE",
-      `Invalid multipart body: ${err instanceof Error ? err.message : String(err)}`
+      `Invalid multipart body (${error instanceof Error ? error.name : "unknown"})`
     );
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid multipart body");
   }
@@ -96,6 +156,9 @@ export async function POST(request: Request) {
   }
   if (!imageBytes || imageBytes.length === 0) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: image");
+  }
+  if (imageBytes.length > MAX_IMAGE_EDIT_BYTES) {
+    return errorResponse(413, "Image file is too large");
   }
 
   const fullModel = model || "cgpt-web/gpt-5.3-instant";
@@ -118,62 +181,122 @@ export async function POST(request: Request) {
     );
   }
 
+  const editBody = {
+    model: fullModel,
+    prompt,
+    size: size ?? undefined,
+    response_format: responseFormat ?? undefined,
+    n: 1,
+  };
+  const admission = startManagedImageRequest({
+    identity: authentication.identity,
+    body: editBody,
+    operation: "edit",
+    provider: parsed.provider,
+    requestId: request.headers.get("x-request-id"),
+  });
+  if (!admission.allowed) return admission.rejection;
+  const { trace } = admission;
+
   const allowedConnections =
     policy.apiKeyInfo?.allowedConnections && policy.apiKeyInfo.allowedConnections.length > 0
       ? policy.apiKeyInfo.allowedConnections
       : null;
-  const credentials = await getProviderCredentials(
-    parsed.provider,
-    null,
-    allowedConnections,
-    fullModel
-  );
-  if (!credentials) {
-    return errorResponse(
-      HTTP_STATUS.UNAUTHORIZED,
-      `No credentials for provider: ${parsed.provider}`
+  let credentials: any = null;
+  let result: any = {
+    success: false,
+    status: HTTP_STATUS.SERVER_ERROR,
+    error: { code: "image_edit_route_unhandled" },
+  };
+  try {
+    credentials = await getProviderCredentials(
+      parsed.provider,
+      null,
+      allowedConnections,
+      fullModel
     );
-  }
-  if (credentials.allRateLimited) {
-    return unavailableResponse(
-      HTTP_STATUS.RATE_LIMITED,
-      `[${parsed.provider}] All accounts rate limited`,
-      credentials.retryAfter,
-      credentials.retryAfterHuman
-    );
-  }
+    if (!credentials) {
+      result = {
+        success: false,
+        status: HTTP_STATUS.UNAUTHORIZED,
+        error: { code: "image_provider_credentials_missing" },
+      };
+      return withManagedImageRequestId(
+        errorResponse(HTTP_STATUS.UNAUTHORIZED, `No credentials for provider: ${parsed.provider}`),
+        trace
+      );
+    }
+    if (credentials.allRateLimited) {
+      result = {
+        success: false,
+        status: HTTP_STATUS.RATE_LIMITED,
+        error: { code: "image_provider_rate_limited" },
+      };
+      return withManagedImageRequestId(
+        unavailableResponse(
+          HTTP_STATUS.RATE_LIMITED,
+          `[${parsed.provider}] All accounts rate limited`,
+          credentials.retryAfter,
+          credentials.retryAfterHuman
+        ),
+        trace
+      );
+    }
 
-  const result = await handleImageEdit({
-    provider: parsed.provider,
-    model: parsed.model,
-    body: {
-      prompt,
-      size: size ?? undefined,
-      response_format: responseFormat ?? undefined,
-      n: 1,
-    },
-    imageBytes,
-    imageMime,
-    credentials,
-    log,
-    signal: request.signal,
-    clientHeaders: publicBaseUrlHeaders(request.headers),
-  });
-
-  if (result.success) {
-    await clearRecoveredProviderState(credentials);
-    return new Response(JSON.stringify((result as any).data), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
+    result = await handleImageEdit({
+      provider: parsed.provider,
+      model: parsed.model,
+      body: editBody,
+      imageBytes,
+      imageMime,
+      credentials,
+      log,
+      signal: request.signal,
+      clientHeaders: publicBaseUrlHeaders(request.headers),
+      trace: {
+        apiKeyId: trace.apiKeyId,
+        apiKeyName: trace.apiKeyName,
+        connectionId: credentials?.connectionId ?? null,
+      },
     });
-  }
 
-  const errorPayload = addVietnameseMessageToErrorPayload(
-    (result as any).status,
-    toJsonErrorPayload((result as any).error, "Image edit provider error")
-  );
-  return new Response(JSON.stringify(errorPayload), {
-    status: (result as any).status,
-    headers: { "Content-Type": "application/json" },
-  });
+    if (result.success) {
+      await clearRecoveredProviderState(credentials);
+      return withManagedImageRequestId(
+        new Response(JSON.stringify((result as any).data), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+        trace
+      );
+    }
+
+    const errorPayload = addVietnameseMessageToErrorPayload(
+      (result as any).status,
+      toJsonErrorPayload((result as any).error, "Image edit provider error")
+    );
+    return withManagedImageRequestId(
+      new Response(JSON.stringify(errorPayload), {
+        status: (result as any).status,
+        headers: { "Content-Type": "application/json" },
+      }),
+      trace
+    );
+  } catch (error) {
+    result = {
+      success: false,
+      status: HTTP_STATUS.SERVER_ERROR,
+      error: { code: "image_edit_route_unhandled" },
+    };
+    log.error(
+      "IMAGE",
+      `Image edit route failed (${error instanceof Error ? error.name : "unknown"})`
+    );
+    return withManagedImageRequestId(
+      errorResponse(HTTP_STATUS.SERVER_ERROR, "Image edit failed"),
+      trace
+    );
+  } finally {
+    finishManagedImageRequest(trace, result, credentials?.connectionId);
+  }
 }

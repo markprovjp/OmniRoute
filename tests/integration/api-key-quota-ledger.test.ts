@@ -7,6 +7,7 @@ import path from "node:path";
 const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-api-key-quota-"));
 process.env.DATA_DIR = TEST_DATA_DIR;
 process.env.API_KEY_SECRET = "test-api-key-quota-secret";
+process.env.REDIS_URL = "redis://quota-ledger.test";
 
 const core = await import("../../src/lib/db/core.ts");
 const apiKeysDb = await import("../../src/lib/db/apiKeys.ts");
@@ -28,6 +29,105 @@ test.beforeEach(async () => {
 test.after(async () => {
   await resetStorage();
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+});
+
+test("legacy cached-token overcount migration reconciles only fully evidenced keys", async () => {
+  const reconciledKey = await apiKeysDb.createApiKey("Legacy cached key", MACHINE_ID, {
+    commercialKey: true,
+    tokenLimit: 30_000_000,
+  });
+  const untouchedKey = await apiKeysDb.createApiKey("Ambiguous legacy key", MACHINE_ID, {
+    commercialKey: true,
+    tokenLimit: 30_000_000,
+  });
+  const db = core.getDbInstance();
+  const insertUsage = db.prepare(
+    `INSERT INTO usage_history
+      (provider, model, api_key_id, api_key_name, tokens_input, tokens_output,
+       tokens_cache_read, tokens_cache_creation, tokens_reasoning, status, success,
+       latency_ms, ttft_ms, timestamp)
+     VALUES ('codex', 'gpt-5.5', @apiKeyId, @apiKeyName, @input, @output,
+       @cacheRead, 0, 0, '200', 1, 1, 1, @timestamp)`
+  );
+  insertUsage.run({
+    apiKeyId: reconciledKey.id,
+    apiKeyName: reconciledKey.name,
+    input: 1_000,
+    output: 100,
+    cacheRead: 800,
+    timestamp: "2026-07-19T00:00:00.000Z",
+  });
+  insertUsage.run({
+    apiKeyId: reconciledKey.id,
+    apiKeyName: reconciledKey.name,
+    input: 500,
+    output: 50,
+    cacheRead: 400,
+    timestamp: "2026-07-19T00:01:00.000Z",
+  });
+  insertUsage.run({
+    apiKeyId: untouchedKey.id,
+    apiKeyName: untouchedKey.name,
+    input: 1_000,
+    output: 100,
+    cacheRead: 800,
+    timestamp: "2026-07-19T00:02:00.000Z",
+  });
+  db.prepare("UPDATE api_keys SET token_used = 1650 WHERE id = ?").run(reconciledKey.id);
+  db.prepare("UPDATE api_keys SET token_used = 9999 WHERE id = ?").run(untouchedKey.id);
+
+  const migrationSql = fs.readFileSync(
+    new URL("../../src/lib/db/migrations/071_reconcile_cached_token_usage.sql", import.meta.url),
+    "utf8"
+  );
+  db.exec(migrationSql);
+
+  const reconciled = await apiKeysDb.getApiKeyById(reconciledKey.id);
+  const untouched = await apiKeysDb.getApiKeyById(untouchedKey.id);
+  const audit = db
+    .prepare(
+      `SELECT previous_token_used, corrected_token_used, excluded_cached_tokens, usage_rows
+       FROM api_key_token_reconciliation_audit WHERE api_key_id = ?`
+    )
+    .get(reconciledKey.id) as Record<string, number> | undefined;
+
+  assert.equal(reconciled?.tokenUsed, 450);
+  assert.equal(untouched?.tokenUsed, 9_999);
+  assert.deepEqual(audit, {
+    previous_token_used: 1_650,
+    corrected_token_used: 450,
+    excluded_cached_tokens: 1_200,
+    usage_rows: 2,
+  });
+});
+
+test("distributed quota falls back to SQLite and repairs Redis drift instead of false 429", async () => {
+  const key = await apiKeysDb.createApiKey("Redis drift key", MACHINE_ID, {
+    commercialKey: true,
+    tokenLimit: 100,
+  });
+  const calls: Array<{ script: string; args: Array<string | number> }> = [];
+  quotaLedger.setApiKeyQuotaRedisClientForTest({
+    status: "ready",
+    async eval(script, _numKeys, ...args) {
+      calls.push({ script, args });
+      return calls.length === 1 ? [0, "lifetime_token_limit"] : [1, "ok"];
+    },
+  });
+
+  try {
+    const reservation = await quotaLedger.reserveApiKeyUsageDistributed({
+      apiKeyId: key.id,
+      estimatedTokens: 10,
+      requestId: "req-redis-drift",
+    });
+
+    assert.equal(reservation.allowed, true);
+    assert.equal(calls.length, 2);
+    assert.match(calls[1].script, /reconcile quota mirror/i);
+  } finally {
+    quotaLedger.setApiKeyQuotaRedisClientForTest(null);
+  }
 });
 
 test("daily token reservations prevent share-key quota overshoot", async () => {

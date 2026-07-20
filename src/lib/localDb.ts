@@ -99,6 +99,9 @@ export {
   resetApiKeyState,
 } from "./db/apiKeys";
 
+export * from "./db/imageGenerationEvents";
+export * from "./db/apiKeyCreditLedger";
+
 export {
   createTelegramLinkClaim,
   consumeTelegramLinkClaim,

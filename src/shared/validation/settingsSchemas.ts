@@ -215,8 +215,8 @@ export const updateSettingsSchema = z.object({
   antigravitySignatureCacheMode: z.enum(signatureCacheModeValues).optional(),
   // Adaptive Volume Routing
   adaptiveVolumeRouting: z.boolean().optional(),
-  // Usage token buffer — safety margin added to reported prompt/input token counts.
-  // Prevents CLI tools from overrunning context windows. Set to 0 to disable.
+  // Usage token buffer — safety margin added only to estimated prompt/input counts.
+  // Exact provider-reported usage remains unchanged. Set to 0 to disable.
   usageTokenBuffer: z.number().int().min(0).max(50000).optional(),
   // Custom CLI agent definitions for ACP
   customAgents: z

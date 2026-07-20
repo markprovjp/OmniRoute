@@ -50,6 +50,18 @@ test("classify429: 429 with quota keyword in nested object body returns 'quota_e
     }),
     "quota_exhausted"
   );
+  assert.equal(
+    classify429({
+      status: 429,
+      body: {
+        error: {
+          type: "usage_limit_reached",
+          message: "The usage limit has been reached",
+        },
+      },
+    }),
+    "quota_exhausted"
+  );
 });
 
 test("classify429: 429 without quota keyword returns 'rate_limit'", () => {
@@ -92,6 +104,9 @@ test("looksLikeQuotaExhausted: detects all known keyword variants", () => {
     "hard limit",
     "hard-limit",
     "plan limit",
+    "usage limit reached",
+    "The usage limit has been reached",
+    "usage_limit_reached",
   ]) {
     assert.equal(looksLikeQuotaExhausted(body), true, `failed for: ${body}`);
   }
