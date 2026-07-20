@@ -82,3 +82,7 @@
   the rendered URL and remains masked in the input.
 - The anchor is intentionally user-activated, avoiding unreliable asynchronous popup behavior;
   success wording is deferred until the customer can open Telegram to finish connecting.
+
+## Remediation Commit
+
+- `b573a83e5` - `fix(usage): bind Telegram link to checked key`
