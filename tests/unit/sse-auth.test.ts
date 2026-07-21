@@ -341,6 +341,46 @@ test("getProviderCredentials keeps separate codex affinity per session", async (
   assert.equal(sessionB2.connectionId, second.id);
 });
 
+test("getProviderCredentials spills spaced synthetic Codex retries across available accounts", async () => {
+  const originalNow = Date.now;
+  let now = 2_000_000_000_000;
+  Date.now = () => now;
+
+  try {
+    await settingsDb.updateSettings({ fallbackStrategy: "round-robin", stickyRoundRobinLimit: 10 });
+    await seedConnection("codex", {
+      name: "codex-synthetic-spill-a",
+      lastUsedAt: new Date(now - 30_000).toISOString(),
+    });
+    await seedConnection("codex", {
+      name: "codex-synthetic-spill-b",
+      lastUsedAt: new Date(now - 20_000).toISOString(),
+    });
+    await seedConnection("codex", {
+      name: "codex-synthetic-spill-c",
+      lastUsedAt: new Date(now - 10_000).toISOString(),
+    });
+
+    const sessionKey = "input:sha256:spaced-production-retry";
+    const selected: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const credentials = await auth.getProviderCredentials("codex", null, null, "gpt-5.6-sol", {
+        sessionKey,
+      });
+      selected.push(credentials.connectionId);
+      now += 60_000;
+    }
+
+    assert.equal(
+      new Set(selected).size,
+      3,
+      "synthetic retries one minute apart must not remain pinned to one slow account"
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("getProviderCredentials rebinds codex session when affinity connection is excluded", async () => {
   await settingsDb.updateSettings({ fallbackStrategy: "round-robin", stickyRoundRobinLimit: 10 });
   const first = await seedConnection("codex", {

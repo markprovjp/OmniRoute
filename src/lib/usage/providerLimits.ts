@@ -66,6 +66,7 @@ const DEFAULT_REFRESH_GLOBAL_CONCURRENCY = 32;
 const DEFAULT_REFRESH_PER_PROVIDER_CONCURRENCY = 5;
 const DEFAULT_REFRESH_BATCH_SIZE = 25;
 const DEFAULT_REFRESH_FLUSH_INTERVAL_MS = 100;
+const DEFAULT_REFRESH_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_LIMITS_AUTO_SYNC_SETTING_KEY = "provider_limits_auto_sync_last_run";
 
 type ProviderLimitsLiveResult = {
@@ -311,6 +312,12 @@ export function getProviderLimitsRefreshConfig() {
       10,
       60_000
     ),
+    requestTimeoutMs: readBoundedInteger(
+      "PROVIDER_LIMITS_REFRESH_REQUEST_TIMEOUT_MS",
+      DEFAULT_REFRESH_REQUEST_TIMEOUT_MS,
+      1_000,
+      300_000
+    ),
   };
 }
 
@@ -495,6 +502,7 @@ export interface SyncAllProviderLimitsOptions {
   perProviderConcurrency?: number;
   batchSize?: number;
   flushIntervalMs?: number;
+  refreshTimeoutMs?: number;
   onStart?: (total: number) => void | Promise<void>;
   onProgress?: (
     event: ProviderLimitsRefreshEvent<ProviderLimitsCacheEntry>
@@ -530,6 +538,7 @@ export async function syncAllProviderLimits(options: SyncAllProviderLimitsOption
     perProviderConcurrency: options.perProviderConcurrency ?? defaults.perProviderConcurrency,
     batchSize: options.batchSize ?? defaults.batchSize,
     flushIntervalMs: options.flushIntervalMs ?? defaults.flushIntervalMs,
+    refreshTimeoutMs: options.refreshTimeoutMs ?? defaults.requestTimeoutMs,
     refresh: async (connection) => {
       const { usage } = await fetchLiveProviderLimitsWithOptions(connection.id, {
         forceRefresh: source === "manual",

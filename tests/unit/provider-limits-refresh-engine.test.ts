@@ -97,6 +97,28 @@ test("refresh engine reports failures without persisting failed entries", async 
   ]);
 });
 
+test("refresh engine times out a stuck provider without blocking the whole job", async () => {
+  const events: Array<{ connectionId: string; status: string; error?: string }> = [];
+  const startedAt = Date.now();
+
+  const summary = await runProviderLimitsRefreshEngine<TestConnection, TestCache>({
+    connections: [{ id: "stuck", provider: "codex" }],
+    refresh: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return { fetchedAt: "2026-07-20T00:00:00.000Z", quotas: {} };
+    },
+    persistBatch: async () => {},
+    onProgress: (event) => events.push(event),
+    refreshTimeoutMs: 20,
+  });
+
+  assert.ok(Date.now() - startedAt < 80, "stuck provider should be released by the timeout");
+  assert.equal(summary.succeeded, 0);
+  assert.equal(summary.failed, 1);
+  assert.equal(events[0]?.status, "failed");
+  assert.match(events[0]?.error || "", /timed out/i);
+});
+
 test("single-flight joins duplicate refreshes and releases the key after settlement", async () => {
   const singleFlight = createProviderLimitsSingleFlight<string>();
   const deferred = Promise.withResolvers<string>();

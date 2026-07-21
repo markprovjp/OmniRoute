@@ -1005,9 +1005,13 @@ async function handleSingleModelChat(
         return result.response;
       }
 
-      if (result.errorType === "stream_timeout" || result.errorType === "stream_early_eof") {
-        // Stream readiness timeout is an upstream stall, not an account/quota failure.
-        // Do NOT mark the account as unavailable or trip the circuit breaker.
+      if (
+        result.errorType === "stream_timeout" ||
+        result.errorType === "stream_early_eof" ||
+        result.errorType === "rate_limit_queue_timeout"
+      ) {
+        // Stream stalls and local queue pressure are not account/quota failures.
+        // Do NOT mark the account unavailable or fan out retries across the pool.
         return result.response;
       }
 
