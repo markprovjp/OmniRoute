@@ -166,6 +166,11 @@ import {
   getModelFamily,
 } from "../services/modelFamilyFallback.ts";
 import { computeRequestHash, deduplicate, shouldDeduplicate } from "../services/requestDedup.ts";
+import {
+  buildCodexSyntheticConcurrencyKey,
+  isCodexSyntheticConcurrencyError,
+  runWithCodexSyntheticConcurrency,
+} from "../services/syntheticCodexConcurrency.ts";
 import { compressContext, estimateTokens, getTokenLimit } from "../services/contextManager.ts";
 import {
   getBackgroundTaskReason,
@@ -3121,9 +3126,17 @@ export async function handleChatCore({
   const dedupRequestBody = { ...translatedBody, model: `${provider}/${model}`, stream };
   const dedupEnabled = shouldDeduplicate(dedupRequestBody);
   const dedupHash = dedupEnabled ? computeRequestHash(dedupRequestBody) : null;
+  const syntheticSessionKey =
+    provider === "codex" ? extractSessionAffinityKey(body, clientRawRequest?.headers) : null;
+  const syntheticConcurrencyKey = buildCodexSyntheticConcurrencyKey({
+    provider,
+    apiKeyId: apiKeyInfo?.id,
+    sessionKey: syntheticSessionKey,
+    stream,
+  });
 
   const executeProviderRequest = async (modelToCall = effectiveModel, allowDedup = false) => {
-    const execute = async () => {
+    const executeUpstream = async () => {
       const executionCredentials = getExecutionCredentials();
       // Track execution credentials for key health recording (to capture selectedKeyId)
       let lastExecCreds = executionCredentials;
@@ -3477,6 +3490,9 @@ export async function handleChatCore({
       }
     };
 
+    const execute = async () =>
+      runWithCodexSyntheticConcurrency(syntheticConcurrencyKey, executeUpstream);
+
     if (allowDedup && dedupEnabled && dedupHash) {
       const dedupResult = await deduplicate(dedupHash, execute);
       if (dedupResult.wasDeduplicated) {
@@ -3549,6 +3565,37 @@ export async function handleChatCore({
     );
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false);
+    if (isCodexSyntheticConcurrencyError(error)) {
+      const failureStatus = HTTP_STATUS.RATE_LIMITED;
+      const failureMessage = error.message;
+      appendRequestLog({
+        model,
+        provider,
+        connectionId,
+        status: `FAILED ${error.code}`,
+      }).catch(() => {});
+      persistAttemptLogs({
+        status: failureStatus,
+        error: failureMessage,
+        providerRequest: finalBody || translatedBody,
+        clientResponse: buildErrorBody(failureStatus, failureMessage),
+        claudeCacheMeta: claudePromptCacheLogMeta,
+        cacheSource: "upstream",
+      });
+      persistFailureUsage(failureStatus, error.code);
+      const result = createErrorResult(
+        failureStatus,
+        failureMessage,
+        null,
+        error.code,
+        "codex_synthetic_concurrency"
+      );
+      return {
+        ...result,
+        errorType: "codex_synthetic_concurrency",
+        errorCode: error.code,
+      };
+    }
     if (isRateLimitQueueTimeoutError(error)) {
       const failureStatus = HTTP_STATUS.RATE_LIMITED;
       const failureMessage = error.message;

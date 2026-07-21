@@ -31,6 +31,20 @@ test("Codex effective fast tier combines global and per-connection defaults", ()
   );
 });
 
+test("Codex global fast tier includes gpt-5.6-sol in the default priority models", () => {
+  const injected = applyCodexGlobalFastServiceTier(
+    "codex",
+    { providerSpecificData: { workspaceId: "ws-sol" } },
+    { codexServiceTier: { enabled: true } },
+    { model: "gpt-5.6-sol" }
+  );
+
+  assert.deepEqual(injected.providerSpecificData, {
+    workspaceId: "ws-sol",
+    requestDefaults: { serviceTier: "priority" },
+  });
+});
+
 test("Codex global fast tier injects priority default without overwriting connection defaults", () => {
   const injected = applyCodexGlobalFastServiceTier(
     "codex",
