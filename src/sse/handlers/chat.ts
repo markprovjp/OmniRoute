@@ -1015,6 +1015,25 @@ async function handleSingleModelChat(
         return result.response;
       }
 
+      if (result.errorType === "codex_account_concurrency") {
+        // Credential selection raced with another request that acquired this account.
+        // Preserve account health and try another eligible connection.
+        if (hasForcedConnection) {
+          return result.response;
+        }
+
+        log.info(
+          "AUTH",
+          `Codex account ${accountId}... reached local capacity, trying another eligible account`
+        );
+        excludedConnectionIds.add(credentials.connectionId);
+        lastError = result.error;
+        lastStatus = result.status;
+        requestRetryLastError = result.error;
+        requestRetryLastStatus = result.status;
+        continue;
+      }
+
       if (result.errorType === "account_semaphore_capacity") {
         // Local concurrency pressure is not an upstream quota failure. Prefer another
         // account when possible; pinned combo steps fall through to combo orchestration.

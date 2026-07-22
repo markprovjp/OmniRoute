@@ -42,6 +42,10 @@ import {
   classifyProviderError,
   PROVIDER_ERROR_TYPES,
 } from "@omniroute/open-sse/services/errorClassifier.ts";
+import {
+  getCodexAccountActiveCount,
+  isCodexAccountAtCapacity,
+} from "@omniroute/open-sse/services/codexAccountConcurrency.ts";
 import { getCodexModelScope } from "@omniroute/open-sse/executors/codex.ts";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
 import { getProviderAlias, resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers";
@@ -642,6 +646,27 @@ function compareLruConnections(a: ProviderConnectionView, b: ProviderConnectionV
   return (a.priority || 999) - (b.priority || 999);
 }
 
+function compareCodexConnectionLoad(a: ProviderConnectionView, b: ProviderConnectionView): number {
+  const activeDelta = getCodexAccountActiveCount(a.id) - getCodexAccountActiveCount(b.id);
+  if (activeDelta !== 0) return activeDelta;
+  return compareLruConnections(a, b);
+}
+
+function isCodexConnectionBusy(connection: ProviderConnectionView): boolean {
+  return isCodexAccountAtCapacity(connection.id, connection.maxConcurrent);
+}
+
+function getIdleCodexConnections(
+  connections: ProviderConnectionView[],
+  excludeConnectionId: string | null = null
+): ProviderConnectionView[] {
+  return connections
+    .filter(
+      (connection) => connection.id !== excludeConnectionId && !isCodexConnectionBusy(connection)
+    )
+    .sort(compareCodexConnectionLoad);
+}
+
 async function selectSessionAffinityConnection(
   provider: string,
   sessionKey: string | null | undefined,
@@ -651,21 +676,40 @@ async function selectSessionAffinityConnection(
 
   const existing = getSessionAccountAffinity(sessionKey, provider);
   if (existing) {
-    const connection = connections.find((candidate) => candidate.id === existing.connectionId);
-    if (connection) {
+    const affinityConnection =
+      connections.find((candidate) => candidate.id === existing.connectionId) ?? null;
+    if (affinityConnection) {
+      if (provider === "codex" && isCodexConnectionBusy(affinityConnection)) {
+        const spillover = getIdleCodexConnections(connections, affinityConnection.id)[0];
+        if (spillover) {
+          await updateProviderConnection(spillover.id, {
+            lastUsedAt: new Date().toISOString(),
+            consecutiveUseCount: (spillover.consecutiveUseCount || 0) + 1,
+          });
+          log.info(
+            "AUTH",
+            `session_key=${formatSessionKeyForLog(sessionKey)} -> connection ${spillover.id.slice(
+              0,
+              8
+            )} (busy affinity spillover from ${affinityConnection.id.slice(0, 8)})`
+          );
+          return spillover;
+        }
+      }
+
       touchSessionAccountAffinity(sessionKey, provider);
-      await updateProviderConnection(connection.id, {
+      await updateProviderConnection(affinityConnection.id, {
         lastUsedAt: new Date().toISOString(),
-        consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1,
+        consecutiveUseCount: (affinityConnection.consecutiveUseCount || 0) + 1,
       });
       log.info(
         "AUTH",
-        `session_key=${formatSessionKeyForLog(sessionKey)} -> connection ${connection.id.slice(
+        `session_key=${formatSessionKeyForLog(sessionKey)} -> connection ${affinityConnection.id.slice(
           0,
           8
         )} (affinity)`
       );
-      return connection;
+      return affinityConnection;
     }
 
     deleteSessionAccountAffinity(sessionKey, provider);
@@ -675,7 +719,10 @@ async function selectSessionAffinityConnection(
     );
   }
 
-  const connection = [...connections].sort(compareLruConnections)[0] ?? null;
+  const connection =
+    [...connections].sort(
+      provider === "codex" ? compareCodexConnectionLoad : compareLruConnections
+    )[0] ?? null;
   if (!connection) return null;
 
   upsertSessionAccountAffinity(sessionKey, provider, connection.id);
@@ -1169,7 +1216,8 @@ export async function getProviderCredentials(
       };
     }
 
-    const orderedConnections = withQuota;
+    const orderedConnections =
+      provider === "codex" ? [...withQuota].sort(compareCodexConnectionLoad) : withQuota;
 
     const settings = await getSettings();
     const strategy = settings.fallbackStrategy || "fill-first";

@@ -148,6 +148,12 @@ import {
   buildAccountSemaphoreKey,
   markBlocked as markAccountSemaphoreBlocked,
 } from "../services/accountSemaphore.ts";
+import {
+  acquireCodexAccountConcurrency,
+  holdCodexAccountConcurrencyUntilResponseBodyCompletes,
+  isCodexAccountConcurrencyError,
+  type CodexAccountConcurrencyLease,
+} from "../services/codexAccountConcurrency.ts";
 import { lockModel, lockModelIfPerModelQuota } from "../services/accountFallback.ts";
 import {
   generateSignature,
@@ -3123,6 +3129,33 @@ export async function handleChatCore({
   const dedupHash = dedupEnabled ? computeRequestHash(dedupRequestBody) : null;
 
   const executeProviderRequest = async (modelToCall = effectiveModel, allowDedup = false) => {
+    let codexAccountLease: CodexAccountConcurrencyLease | null = null;
+    let codexAccountLeaseConnectionId: string | null = null;
+
+    const switchCodexAccountLease = (
+      nextCredentials: Record<string, unknown> | null | undefined
+    ) => {
+      if (provider !== "codex") return;
+      const nextConnectionId = nextCredentials?.connectionId || connectionId;
+      if (!nextConnectionId) return;
+      const normalizedConnectionId = String(nextConnectionId);
+      if (codexAccountLease && codexAccountLeaseConnectionId === normalizedConnectionId) return;
+
+      const nextLease = acquireCodexAccountConcurrency(
+        normalizedConnectionId,
+        toFiniteNumberOrNull(nextCredentials?.maxConcurrent)
+      );
+      codexAccountLease?.release();
+      codexAccountLease = nextLease;
+      codexAccountLeaseConnectionId = normalizedConnectionId;
+    };
+
+    const releaseCodexAccountLease = () => {
+      codexAccountLease?.release();
+      codexAccountLease = null;
+      codexAccountLeaseConnectionId = null;
+    };
+
     const execute = async () => {
       const executionCredentials = getExecutionCredentials();
       // Track execution credentials for key health recording (to capture selectedKeyId)
@@ -3230,6 +3263,7 @@ export async function handleChatCore({
       trace("post_semaphore");
 
       try {
+        switchCodexAccountLease(executionCredentials);
         trace("pre_rate_limit");
         const rawResult = await withRateLimit(
           provider,
@@ -3391,6 +3425,10 @@ export async function handleChatCore({
                   },
                 });
 
+                // Transfer the active lease before mutating credentials so the retry is
+                // counted against the replacement account, not the failed one.
+                switchCodexAccountLease(nextCreds);
+
                 // Update credentials in-place so getExecutionCredentials() picks up the new account
                 Object.assign(credentials, nextCreds);
 
@@ -3403,20 +3441,31 @@ export async function handleChatCore({
                 const originalBody = res.response.body;
                 if (!originalBody) {
                   acquireAccountSemaphoreRelease();
+                  releaseCodexAccountLease();
                   return res;
+                }
+
+                let response = new Response(
+                  wrapReadableStreamWithFinalize(originalBody, acquireAccountSemaphoreRelease),
+                  {
+                    status: res.response.status,
+                    statusText: res.response.statusText,
+                    headers: res.response.headers,
+                  }
+                );
+                if (codexAccountLease) {
+                  response = holdCodexAccountConcurrencyUntilResponseBodyCompletes(
+                    response,
+                    codexAccountLease
+                  );
+                  codexAccountLease = null;
+                  codexAccountLeaseConnectionId = null;
                 }
 
                 return {
                   ...res,
                   _executionCredentials: execCreds,
-                  response: new Response(
-                    wrapReadableStreamWithFinalize(originalBody, acquireAccountSemaphoreRelease),
-                    {
-                      status: res.response.status,
-                      statusText: res.response.statusText,
-                      headers: res.response.headers,
-                    }
-                  ),
+                  response,
                   headers: res.response.headers,
                 };
               }
@@ -3455,6 +3504,7 @@ export async function handleChatCore({
           upstreamStream
         );
         acquireAccountSemaphoreRelease();
+        releaseCodexAccountLease();
 
         return {
           ...rawResult,
@@ -3473,6 +3523,7 @@ export async function handleChatCore({
         };
       } catch (error) {
         acquireAccountSemaphoreRelease();
+        releaseCodexAccountLease();
         throw error;
       }
     };
@@ -3549,6 +3600,39 @@ export async function handleChatCore({
     );
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false);
+    if (isCodexAccountConcurrencyError(error)) {
+      const failureStatus = HTTP_STATUS.RATE_LIMITED;
+      const failureMessage = error.message;
+      appendRequestLog({
+        model,
+        provider,
+        connectionId,
+        status: `FAILED ${error.code}`,
+      }).catch(() => {});
+      persistAttemptLogs({
+        status: failureStatus,
+        error: failureMessage,
+        providerRequest: finalBody || translatedBody,
+        clientResponse: buildErrorBody(failureStatus, failureMessage),
+        claudeCacheMeta: claudePromptCacheLogMeta,
+        cacheSource: "upstream",
+      });
+      persistFailureUsage(failureStatus, error.code);
+      const result = stream
+        ? createStreamingErrorResult(failureStatus, failureMessage, error.code)
+        : createErrorResult(
+            failureStatus,
+            failureMessage,
+            null,
+            error.code,
+            "codex_account_concurrency"
+          );
+      return {
+        ...result,
+        errorType: "codex_account_concurrency",
+        errorCode: error.code,
+      };
+    }
     if (isRateLimitQueueTimeoutError(error)) {
       const failureStatus = HTTP_STATUS.RATE_LIMITED;
       const failureMessage = error.message;
