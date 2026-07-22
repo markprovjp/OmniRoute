@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import {
   CODEX_SYNTHETIC_CONCURRENCY_ERROR_CODE,
   __clearCodexSyntheticConcurrencyForTesting,
+  createCodexRequestConcurrencyController,
+  holdCodexConcurrencyUntilResponseBodyCompletes,
   runWithCodexSyntheticConcurrency,
 } from "../../open-sse/services/syntheticCodexConcurrency.ts";
 
@@ -38,6 +40,47 @@ test.beforeEach(() => {
 
 test.after(() => {
   __clearCodexSyntheticConcurrencyForTesting();
+});
+
+test("aggregate Codex concurrency lease remains held until a streaming response body is drained", async () => {
+  const controller = createCodexRequestConcurrencyController({
+    processMaxConcurrent: 4,
+    apiKeyMaxConcurrent: 1,
+    syntheticMaxConcurrent: 4,
+  });
+  const controlled = createControlledResponse();
+  const lease = controller.acquire({
+    provider: "codex",
+    apiKeyId: "key-1",
+    sessionKey: "prompt-cache:streaming",
+    stream: true,
+  });
+  const wrapped = holdCodexConcurrencyUntilResponseBodyCompletes(controlled.response, lease);
+  const draining = wrapped.text();
+
+  assert.throws(
+    () =>
+      controller.acquire({
+        provider: "codex",
+        apiKeyId: "key-1",
+        sessionKey: "prompt-cache:another-stream",
+        stream: true,
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      (error as Error & { code?: string }).code === "CODEX_API_KEY_CONCURRENCY_LIMIT"
+  );
+
+  controlled.complete("data: first\\n\\n");
+  assert.match(await draining, /data: first/);
+
+  const replacement = controller.acquire({
+    provider: "codex",
+    apiKeyId: "key-1",
+    sessionKey: "prompt-cache:replacement",
+    stream: true,
+  });
+  replacement.release();
 });
 
 test("a fifth repeated synthetic request is rejected while four full response bodies remain active", async () => {

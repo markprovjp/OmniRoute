@@ -167,9 +167,10 @@ import {
 } from "../services/modelFamilyFallback.ts";
 import { computeRequestHash, deduplicate, shouldDeduplicate } from "../services/requestDedup.ts";
 import {
-  buildCodexSyntheticConcurrencyKey,
+  acquireCodexRequestConcurrency,
+  holdCodexConcurrencyUntilResponseBodyCompletes,
+  isCodexRequestConcurrencyError,
   isCodexSyntheticConcurrencyError,
-  runWithCodexSyntheticConcurrency,
 } from "../services/syntheticCodexConcurrency.ts";
 import { compressContext, estimateTokens, getTokenLimit } from "../services/contextManager.ts";
 import {
@@ -3128,12 +3129,6 @@ export async function handleChatCore({
   const dedupHash = dedupEnabled ? computeRequestHash(dedupRequestBody) : null;
   const syntheticSessionKey =
     provider === "codex" ? extractSessionAffinityKey(body, clientRawRequest?.headers) : null;
-  const syntheticConcurrencyKey = buildCodexSyntheticConcurrencyKey({
-    provider,
-    apiKeyId: apiKeyInfo?.id,
-    sessionKey: syntheticSessionKey,
-    stream,
-  });
 
   const executeProviderRequest = async (modelToCall = effectiveModel, allowDedup = false) => {
     const executeUpstream = async () => {
@@ -3490,8 +3485,38 @@ export async function handleChatCore({
       }
     };
 
-    const execute = async () =>
-      runWithCodexSyntheticConcurrency(syntheticConcurrencyKey, executeUpstream);
+    const execute = async () => {
+      const codexConcurrencyLease = acquireCodexRequestConcurrency({
+        provider,
+        apiKeyId: apiKeyInfo?.id,
+        sessionKey: syntheticSessionKey,
+        stream,
+      });
+
+      try {
+        const result = await executeUpstream();
+        if (provider !== "codex") {
+          codexConcurrencyLease.release();
+          return result;
+        }
+
+        if (stream && result.response.body) {
+          return {
+            ...result,
+            response: holdCodexConcurrencyUntilResponseBodyCompletes(
+              result.response,
+              codexConcurrencyLease
+            ),
+          };
+        }
+
+        codexConcurrencyLease.release();
+        return result;
+      } catch (error) {
+        codexConcurrencyLease.release();
+        throw error;
+      }
+    };
 
     if (allowDedup && dedupEnabled && dedupHash) {
       const dedupResult = await deduplicate(dedupHash, execute);
@@ -3565,9 +3590,12 @@ export async function handleChatCore({
     );
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false);
-    if (isCodexSyntheticConcurrencyError(error)) {
+    if (isCodexSyntheticConcurrencyError(error) || isCodexRequestConcurrencyError(error)) {
       const failureStatus = HTTP_STATUS.RATE_LIMITED;
       const failureMessage = error.message;
+      const errorType = isCodexSyntheticConcurrencyError(error)
+        ? "codex_synthetic_concurrency"
+        : "codex_concurrency";
       appendRequestLog({
         model,
         provider,
@@ -3583,16 +3611,12 @@ export async function handleChatCore({
         cacheSource: "upstream",
       });
       persistFailureUsage(failureStatus, error.code);
-      const result = createErrorResult(
-        failureStatus,
-        failureMessage,
-        null,
-        error.code,
-        "codex_synthetic_concurrency"
-      );
+      const result = stream
+        ? createStreamingErrorResult(failureStatus, failureMessage, error.code)
+        : createErrorResult(failureStatus, failureMessage, null, error.code, errorType);
       return {
         ...result,
-        errorType: "codex_synthetic_concurrency",
+        errorType,
         errorCode: error.code,
       };
     }

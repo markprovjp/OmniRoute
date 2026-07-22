@@ -1009,7 +1009,8 @@ async function handleSingleModelChat(
         result.errorType === "stream_timeout" ||
         result.errorType === "stream_early_eof" ||
         result.errorType === "rate_limit_queue_timeout" ||
-        result.errorType === "codex_synthetic_concurrency"
+        result.errorType === "codex_synthetic_concurrency" ||
+        result.errorType === "codex_concurrency"
       ) {
         // Stream stalls and local concurrency pressure are not account/quota failures.
         // Do NOT mark the account unavailable or fan out retries across the pool.
