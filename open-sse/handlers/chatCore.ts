@@ -141,6 +141,7 @@ import {
   updateFromHeaders,
   updateFromResponseBody,
   initializeRateLimits,
+  isRateLimitQueueTimeoutError,
 } from "../services/rateLimitManager.ts";
 import {
   acquire as acquireAccountSemaphore,
@@ -3548,6 +3549,39 @@ export async function handleChatCore({
     );
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false);
+    if (isRateLimitQueueTimeoutError(error)) {
+      const failureStatus = HTTP_STATUS.RATE_LIMITED;
+      const failureMessage = error.message;
+      appendRequestLog({
+        model,
+        provider,
+        connectionId,
+        status: `FAILED ${error.code}`,
+      }).catch(() => {});
+      persistAttemptLogs({
+        status: failureStatus,
+        error: failureMessage,
+        providerRequest: finalBody || translatedBody,
+        clientResponse: buildErrorBody(failureStatus, failureMessage),
+        claudeCacheMeta: claudePromptCacheLogMeta,
+        cacheSource: "upstream",
+      });
+      persistFailureUsage(failureStatus, error.code);
+      const result = stream
+        ? createStreamingErrorResult(failureStatus, failureMessage, error.code)
+        : createErrorResult(
+            failureStatus,
+            failureMessage,
+            null,
+            error.code,
+            "rate_limit_queue_timeout"
+          );
+      return {
+        ...result,
+        errorType: "rate_limit_queue_timeout",
+        errorCode: error.code,
+      };
+    }
     if (isSemaphoreCapacityError(error)) {
       appendRequestLog({
         model,
