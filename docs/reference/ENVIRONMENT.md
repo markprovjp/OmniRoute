@@ -331,7 +331,6 @@ detection above).
 | `PROVIDER_LIMITS_REFRESH_PER_PROVIDER_CONCURRENCY` | `5`         | `src/lib/usage/providerLimits.ts`                           | Maximum simultaneous quota refresh calls to one provider (`1..64`).                                                           |
 | `PROVIDER_LIMITS_REFRESH_BATCH_SIZE`               | `25`        | `src/lib/usage/providerLimits.ts`                           | Successful quota cache entries per SQLite batch transaction (`1..1000`).                                                      |
 | `PROVIDER_LIMITS_REFRESH_FLUSH_INTERVAL_MS`        | `100`       | `src/lib/usage/providerLimits.ts`                           | Maximum delay before a partial quota-cache batch is flushed (`10..60000` ms).                                                 |
-| `PROVIDER_LIMITS_REFRESH_REQUEST_TIMEOUT_MS`       | `60000`     | `src/lib/usage/providerLimits.ts`                           | Maximum time for one account quota refresh before it is reported failed (`1000..300000` ms).                                  |
 | `PROVIDER_LIMITS_REFRESH_JOB_TTL_MS`               | `600000`    | `src/lib/usage/providerLimitsRefreshJobs.ts`                | Retention for completed process-local refresh jobs (`1..86400000` ms).                                                        |
 | `OMNIROUTE_DISABLE_BACKGROUND_SERVICES`            | `false`     | `src/instrumentation-node.ts`                               | Disable all background services (sync, pricing, model refresh). Useful for CI/test.                                           |
 | `OMNIROUTE_ENABLE_RUNTIME_BACKGROUND_TASKS`        | _(unset)_   | `src/lib/config/runtimeSettings.ts`                         | Force background tasks on under automated test detection. Set `1` to override the test heuristic.                             |
@@ -416,22 +415,18 @@ process.env[`${PROVIDER_ID}_USER_AGENT`]
 
 > **Source:** `open-sse/executors/base.ts` → `buildHeaders()`
 
-| Variable                                  | Default Value                                 | When to Update                                                                                                                                                                      |
-| ----------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CLAUDE_USER_AGENT`                       | `claude-cli/2.1.145 (external, cli)`          | When Anthropic releases a new CLI version                                                                                                                                           |
-| `CODEX_USER_AGENT`                        | `codex-cli/0.132.0 (Windows 10.0.26200; x64)` | When OpenAI updates the Codex CLI                                                                                                                                                   |
-| `CODEX_CLIENT_VERSION`                    | `0.144.6`                                     | Override Codex client version independently of full UA string                                                                                                                       |
-| `CODEX_SYNTHETIC_SESSION_MAX_CONCURRENCY` | `4`                                           | Maximum parallel non-streaming Codex requests for one API key and synthetic input-prefix session; excess duplicate work fails fast instead of creating an upstream retry staircase. |
-| `CODEX_ACCOUNT_MAX_CONCURRENCY`           | `1`                                           | Maximum active requests per Codex connection. Busy session-affinity targets temporarily spill to another eligible idle connection without rewriting the persisted affinity.         |
-| `CODEX_API_KEY_MAX_CONCURRENCY`           | `32`                                          | Emergency ceiling for one authenticated API key after account-aware routing has distributed requests across eligible connections.                                                   |
-| `CODEX_PROCESS_MAX_CONCURRENCY`           | `32`                                          | Final process-wide safety fuse across API keys. Account-level admission is the primary capacity control.                                                                            |
-| `GITHUB_USER_AGENT`                       | `GitHubCopilotChat/0.45.1`                    | When GitHub Copilot Chat updates                                                                                                                                                    |
-| `ANTIGRAVITY_USER_AGENT`                  | `antigravity/2.0.1 darwin/arm64`              | When Antigravity IDE updates                                                                                                                                                        |
-| `KIRO_USER_AGENT`                         | `AWS-SDK-JS/3.0.0 kiro-ide/1.0.0`             | When Kiro IDE updates                                                                                                                                                               |
-| `QODER_USER_AGENT`                        | `Qoder-Cli`                                   | When Qoder CLI updates                                                                                                                                                              |
-| `QWEN_USER_AGENT`                         | `QwenCode/0.15.9 (linux; x64)`                | When Qwen Code updates                                                                                                                                                              |
-| `CURSOR_USER_AGENT`                       | `Cursor/3.3`                                  | When Cursor updates                                                                                                                                                                 |
-| `GEMINI_CLI_USER_AGENT`                   | `google-api-nodejs-client/10.3.0`             | When Google API client updates                                                                                                                                                      |
+| Variable                 | Default Value                                 | When to Update                                                |
+| ------------------------ | --------------------------------------------- | ------------------------------------------------------------- |
+| `CLAUDE_USER_AGENT`      | `claude-cli/2.1.145 (external, cli)`          | When Anthropic releases a new CLI version                     |
+| `CODEX_USER_AGENT`       | `codex-cli/0.132.0 (Windows 10.0.26200; x64)` | When OpenAI updates the Codex CLI                             |
+| `CODEX_CLIENT_VERSION`   | `0.131.0`                                     | Override Codex client version independently of full UA string |
+| `GITHUB_USER_AGENT`      | `GitHubCopilotChat/0.45.1`                    | When GitHub Copilot Chat updates                              |
+| `ANTIGRAVITY_USER_AGENT` | `antigravity/2.0.1 darwin/arm64`              | When Antigravity IDE updates                                  |
+| `KIRO_USER_AGENT`        | `AWS-SDK-JS/3.0.0 kiro-ide/1.0.0`             | When Kiro IDE updates                                         |
+| `QODER_USER_AGENT`       | `Qoder-Cli`                                   | When Qoder CLI updates                                        |
+| `QWEN_USER_AGENT`        | `QwenCode/0.15.9 (linux; x64)`                | When Qwen Code updates                                        |
+| `CURSOR_USER_AGENT`      | `Cursor/3.3`                                  | When Cursor updates                                           |
+| `GEMINI_CLI_USER_AGENT`  | `google-api-nodejs-client/10.3.0`             | When Google API client updates                                |
 
 > [!TIP]
 > You can add User-Agent overrides for **any** provider using the pattern `{PROVIDER_ID}_USER_AGENT`. The executor dynamically constructs the env var name.

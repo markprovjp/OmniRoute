@@ -34,7 +34,6 @@ export interface ProviderLimitsRefreshEngineOptions<
   perProviderConcurrency?: number;
   batchSize?: number;
   flushIntervalMs?: number;
-  refreshTimeoutMs?: number;
 }
 
 export interface ProviderLimitsRefreshEngineSummary {
@@ -63,24 +62,6 @@ function defaultErrorMessage(error: unknown): string {
     : "Failed to refresh provider limits";
 }
 
-async function runWithRefreshTimeout<T>(factory: () => Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      const error = new Error(`Provider limits refresh timed out after ${timeoutMs}ms`);
-      error.name = "TimeoutError";
-      reject(error);
-    }, timeoutMs);
-    timer.unref?.();
-  });
-
-  try {
-    return await Promise.race([Promise.resolve().then(factory), timeout]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 export async function runProviderLimitsRefreshEngine<
   TConnection extends ProviderLimitsPoolConnection,
   TCache,
@@ -89,7 +70,6 @@ export async function runProviderLimitsRefreshEngine<
 ): Promise<ProviderLimitsRefreshEngineSummary> {
   const batchSize = clampInteger(options.batchSize, 25, 1, 1_000);
   const flushIntervalMs = clampInteger(options.flushIntervalMs, 100, 10, 60_000);
-  const refreshTimeoutMs = clampInteger(options.refreshTimeoutMs, 60_000, 10, 300_000);
   const pending: Array<PendingSuccess<TConnection, TCache>> = [];
   let flushChain = Promise.resolve();
   let succeeded = 0;
@@ -144,29 +124,25 @@ export async function runProviderLimitsRefreshEngine<
   timer.unref?.();
 
   try {
-    const pool = await runProviderLimitsRefreshPool(
-      options.connections,
-      (connection) => runWithRefreshTimeout(() => options.refresh(connection), refreshTimeoutMs),
-      {
-        globalConcurrency: options.globalConcurrency,
-        perProviderConcurrency: options.perProviderConcurrency,
-        onSettled: async (connection, result) => {
-          if (result.status === "fulfilled") {
-            pending.push({ connection, cache: result.value });
-            if (pending.length >= batchSize) await queueFlush(false);
-            return;
-          }
+    const pool = await runProviderLimitsRefreshPool(options.connections, options.refresh, {
+      globalConcurrency: options.globalConcurrency,
+      perProviderConcurrency: options.perProviderConcurrency,
+      onSettled: async (connection, result) => {
+        if (result.status === "fulfilled") {
+          pending.push({ connection, cache: result.value });
+          if (pending.length >= batchSize) await queueFlush(false);
+          return;
+        }
 
-          failed += 1;
-          await emit({
-            connectionId: connection.id,
-            provider: connection.provider,
-            status: "failed",
-            error: (options.formatError || defaultErrorMessage)(result.reason),
-          });
-        },
-      }
-    );
+        failed += 1;
+        await emit({
+          connectionId: connection.id,
+          provider: connection.provider,
+          status: "failed",
+          error: (options.formatError || defaultErrorMessage)(result.reason),
+        });
+      },
+    });
 
     await queueFlush(true);
     await flushChain;

@@ -1005,35 +1005,10 @@ async function handleSingleModelChat(
         return result.response;
       }
 
-      if (
-        result.errorType === "stream_timeout" ||
-        result.errorType === "stream_early_eof" ||
-        result.errorType === "rate_limit_queue_timeout" ||
-        result.errorType === "codex_synthetic_concurrency" ||
-        result.errorType === "codex_concurrency"
-      ) {
-        // Stream stalls and process/session pressure are not account/quota failures.
-        // Do NOT mark the account unavailable or poison fallback health.
+      if (result.errorType === "stream_timeout" || result.errorType === "stream_early_eof") {
+        // Stream readiness timeout is an upstream stall, not an account/quota failure.
+        // Do NOT mark the account as unavailable or trip the circuit breaker.
         return result.response;
-      }
-
-      if (result.errorType === "codex_account_concurrency") {
-        // A request raced with another request that acquired this account after
-        // credential selection. Preserve health and retry an eligible idle peer.
-        if (hasForcedConnection) {
-          return result.response;
-        }
-
-        log.info(
-          "AUTH",
-          `Codex account ${accountId}... reached local capacity, trying another eligible account`
-        );
-        excludedConnectionIds.add(credentials.connectionId);
-        lastError = result.error;
-        lastStatus = result.status;
-        requestRetryLastError = result.error;
-        requestRetryLastStatus = result.status;
-        continue;
       }
 
       if (result.errorType === "account_semaphore_capacity") {

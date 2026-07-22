@@ -42,10 +42,6 @@ import {
   classifyProviderError,
   PROVIDER_ERROR_TYPES,
 } from "@omniroute/open-sse/services/errorClassifier.ts";
-import {
-  getCodexAccountActiveCount,
-  isCodexAccountAtCapacity,
-} from "@omniroute/open-sse/services/codexAccountConcurrency.ts";
 import { getCodexModelScope } from "@omniroute/open-sse/executors/codex.ts";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
 import { getProviderAlias, resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers";
@@ -112,16 +108,6 @@ interface CooldownInspectionState {
 const MIN_QUOTA_THRESHOLD_PERCENT = 1;
 const MAX_QUOTA_THRESHOLD_PERCENT = 100;
 const NON_RETRYABLE_MODEL_LOCKOUT_REASONS = new Set(["not_found", "not_found_local"]);
-const SYNTHETIC_CODEX_BURST_WINDOW_MS = 2 * 60 * 1000;
-const SYNTHETIC_CODEX_BURST_STATE_TTL_MS = 10 * 60 * 1000;
-const SYNTHETIC_CODEX_BURST_STATE_MAX_ENTRIES = 2_048;
-
-interface SyntheticCodexBurstState {
-  lastSelectedAt: number;
-  nextOffset: number;
-}
-
-const syntheticCodexBurstStates = new Map<string, SyntheticCodexBurstState>();
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
@@ -656,98 +642,6 @@ function compareLruConnections(a: ProviderConnectionView, b: ProviderConnectionV
   return (a.priority || 999) - (b.priority || 999);
 }
 
-function compareCodexConnectionLoad(a: ProviderConnectionView, b: ProviderConnectionView): number {
-  const activeDelta = getCodexAccountActiveCount(a.id) - getCodexAccountActiveCount(b.id);
-  if (activeDelta !== 0) return activeDelta;
-  return compareLruConnections(a, b);
-}
-
-function isCodexConnectionBusy(connection: ProviderConnectionView): boolean {
-  return isCodexAccountAtCapacity(connection.id, connection.maxConcurrent);
-}
-
-function getIdleCodexConnections(
-  connections: ProviderConnectionView[],
-  excludeConnectionId: string | null = null
-): ProviderConnectionView[] {
-  return connections
-    .filter(
-      (connection) => connection.id !== excludeConnectionId && !isCodexConnectionBusy(connection)
-    )
-    .sort(compareCodexConnectionLoad);
-}
-
-function getStableSyntheticSpilloverCandidates(
-  connections: ProviderConnectionView[],
-  excludeConnectionId: string | null
-): ProviderConnectionView[] {
-  return connections
-    .filter(
-      (connection) => connection.id !== excludeConnectionId && !isCodexConnectionBusy(connection)
-    )
-    .sort((a, b) => {
-      const activeDelta = getCodexAccountActiveCount(a.id) - getCodexAccountActiveCount(b.id);
-      if (activeDelta !== 0) return activeDelta;
-      return a.id.localeCompare(b.id);
-    });
-}
-
-function pruneSyntheticCodexBurstStates(now: number): void {
-  if (syntheticCodexBurstStates.size <= SYNTHETIC_CODEX_BURST_STATE_MAX_ENTRIES) return;
-
-  for (const [key, state] of syntheticCodexBurstStates) {
-    if (now - state.lastSelectedAt > SYNTHETIC_CODEX_BURST_STATE_TTL_MS) {
-      syntheticCodexBurstStates.delete(key);
-    }
-  }
-
-  while (syntheticCodexBurstStates.size > SYNTHETIC_CODEX_BURST_STATE_MAX_ENTRIES) {
-    const oldestKey = syntheticCodexBurstStates.keys().next().value;
-    if (typeof oldestKey !== "string") break;
-    syntheticCodexBurstStates.delete(oldestKey);
-  }
-}
-
-function selectSyntheticCodexBurstSpillover(
-  provider: string,
-  sessionKey: string,
-  connections: ProviderConnectionView[],
-  affinityConnectionId: string | null,
-  now: number = Date.now()
-): ProviderConnectionView | null {
-  if (provider !== "codex" || !sessionKey.startsWith("input:sha256:")) return null;
-
-  const stateKey = `${provider}:${sessionKey}`;
-  const state = syntheticCodexBurstStates.get(stateKey);
-  const isActiveBurst =
-    affinityConnectionId !== null &&
-    state !== undefined &&
-    now - state.lastSelectedAt <= SYNTHETIC_CODEX_BURST_WINDOW_MS;
-
-  if (!isActiveBurst) {
-    syntheticCodexBurstStates.delete(stateKey);
-    syntheticCodexBurstStates.set(stateKey, { lastSelectedAt: now, nextOffset: 0 });
-    pruneSyntheticCodexBurstStates(now);
-    return null;
-  }
-
-  const spilloverCandidates = getStableSyntheticSpilloverCandidates(
-    connections,
-    affinityConnectionId
-  );
-  if (spilloverCandidates.length === 0) {
-    syntheticCodexBurstStates.set(stateKey, { ...state, lastSelectedAt: now });
-    return null;
-  }
-
-  const connection = spilloverCandidates[state.nextOffset % spilloverCandidates.length];
-  syntheticCodexBurstStates.set(stateKey, {
-    lastSelectedAt: now,
-    nextOffset: state.nextOffset + 1,
-  });
-  return connection;
-}
-
 async function selectSessionAffinityConnection(
   provider: string,
   sessionKey: string | null | undefined,
@@ -756,64 +650,22 @@ async function selectSessionAffinityConnection(
   if (!sessionKey || connections.length === 0) return null;
 
   const existing = getSessionAccountAffinity(sessionKey, provider);
-  const affinityConnection = existing
-    ? (connections.find((candidate) => candidate.id === existing.connectionId) ?? null)
-    : null;
-  const burstSpillover = selectSyntheticCodexBurstSpillover(
-    provider,
-    sessionKey,
-    connections,
-    affinityConnection?.id ?? null
-  );
-
-  if (burstSpillover) {
-    await updateProviderConnection(burstSpillover.id, {
-      lastUsedAt: new Date().toISOString(),
-      consecutiveUseCount: (burstSpillover.consecutiveUseCount || 0) + 1,
-    });
-    log.info(
-      "AUTH",
-      `session_key=${formatSessionKeyForLog(sessionKey)} -> connection ${burstSpillover.id.slice(
-        0,
-        8
-      )} (synthetic burst spillover)`
-    );
-    return burstSpillover;
-  }
-
   if (existing) {
-    if (affinityConnection) {
-      if (provider === "codex" && isCodexConnectionBusy(affinityConnection)) {
-        const spillover = getIdleCodexConnections(connections, affinityConnection.id)[0];
-        if (spillover) {
-          await updateProviderConnection(spillover.id, {
-            lastUsedAt: new Date().toISOString(),
-            consecutiveUseCount: (spillover.consecutiveUseCount || 0) + 1,
-          });
-          log.info(
-            "AUTH",
-            `session_key=${formatSessionKeyForLog(sessionKey)} -> connection ${spillover.id.slice(
-              0,
-              8
-            )} (busy affinity spillover from ${affinityConnection.id.slice(0, 8)})`
-          );
-          return spillover;
-        }
-      }
-
+    const connection = connections.find((candidate) => candidate.id === existing.connectionId);
+    if (connection) {
       touchSessionAccountAffinity(sessionKey, provider);
-      await updateProviderConnection(affinityConnection.id, {
+      await updateProviderConnection(connection.id, {
         lastUsedAt: new Date().toISOString(),
-        consecutiveUseCount: (affinityConnection.consecutiveUseCount || 0) + 1,
+        consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1,
       });
       log.info(
         "AUTH",
-        `session_key=${formatSessionKeyForLog(sessionKey)} -> connection ${affinityConnection.id.slice(
+        `session_key=${formatSessionKeyForLog(sessionKey)} -> connection ${connection.id.slice(
           0,
           8
         )} (affinity)`
       );
-      return affinityConnection;
+      return connection;
     }
 
     deleteSessionAccountAffinity(sessionKey, provider);
@@ -823,10 +675,7 @@ async function selectSessionAffinityConnection(
     );
   }
 
-  const connection =
-    [...connections].sort(
-      provider === "codex" ? compareCodexConnectionLoad : compareLruConnections
-    )[0] ?? null;
+  const connection = [...connections].sort(compareLruConnections)[0] ?? null;
   if (!connection) return null;
 
   upsertSessionAccountAffinity(sessionKey, provider, connection.id);
@@ -1320,8 +1169,7 @@ export async function getProviderCredentials(
       };
     }
 
-    const orderedConnections =
-      provider === "codex" ? [...withQuota].sort(compareCodexConnectionLoad) : withQuota;
+    const orderedConnections = withQuota;
 
     const settings = await getSettings();
     const strategy = settings.fallbackStrategy || "fill-first";

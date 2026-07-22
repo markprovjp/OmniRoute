@@ -37,28 +37,6 @@ interface LimiterUpdateSettings {
 
 type JsonRecord = Record<string, unknown>;
 
-export const RATE_LIMIT_QUEUE_TIMEOUT_CODE = "RATE_LIMIT_QUEUE_TIMEOUT";
-
-export class RateLimitQueueTimeoutError extends Error {
-  readonly code = RATE_LIMIT_QUEUE_TIMEOUT_CODE;
-  readonly maxWaitMs: number;
-
-  constructor(maxWaitMs: number) {
-    super(`Rate limit queue wait exceeded after ${maxWaitMs} ms.`);
-    this.name = "RateLimitQueueTimeoutError";
-    this.maxWaitMs = maxWaitMs;
-  }
-}
-
-export function isRateLimitQueueTimeoutError(error: unknown): error is RateLimitQueueTimeoutError {
-  return (
-    error instanceof RateLimitQueueTimeoutError ||
-    (error instanceof Error &&
-      error.name === "RateLimitQueueTimeoutError" &&
-      (error as Error & { code?: string }).code === RATE_LIMIT_QUEUE_TIMEOUT_CODE)
-  );
-}
-
 function toRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
@@ -428,43 +406,13 @@ export async function withRateLimit(provider, connectionId, model, fn, signal = 
 
   const limiter = getLimiter(provider, connectionId, model);
   const maxWaitMs = currentRequestQueueSettings.maxWaitMs;
-  const key = getLimiterKey(provider, connectionId, model);
-  let dispatched = false;
-  let cancelledWhileQueued = false;
-  let queueTimer: ReturnType<typeof setTimeout> | undefined;
-  let abortListener: (() => void) | undefined;
+  const scheduleOpts = maxWaitMs && maxWaitMs > 0 ? { expiration: maxWaitMs } : {};
 
-  // Bottleneck's `expiration` limits execution time after dispatch; it is not a
-  // queue-wait timeout. Long streaming requests therefore must not use it.
-  const scheduled = limiter.schedule(async () => {
-    dispatched = true;
-    if (queueTimer) clearTimeout(queueTimer);
-    if (cancelledWhileQueued) return undefined;
-    return fn();
-  });
-
-  const racers: Promise<unknown>[] = [scheduled];
-
-  if (maxWaitMs && maxWaitMs > 0) {
-    racers.push(
-      new Promise<never>((_, reject) => {
-        queueTimer = setTimeout(() => {
-          if (dispatched) return;
-          cancelledWhileQueued = true;
-          console.log(
-            `⏰ [RATE-LIMIT] ${key} — job expired after ${Math.ceil(maxWaitMs / 1000)}s in queue, dropping`
-          );
-          reject(new RateLimitQueueTimeoutError(maxWaitMs));
-        }, maxWaitMs);
-      })
-    );
-  }
-
-  if (signal) {
-    racers.push(
-      new Promise<never>((_, reject) => {
+  try {
+    if (signal) {
+      let abortListener: (() => void) | undefined;
+      const abortPromise = new Promise<never>((_, reject) => {
         const onAbort = () => {
-          if (!dispatched) cancelledWhileQueued = true;
           const reason = signal.reason;
           const err =
             reason instanceof Error
@@ -479,17 +427,28 @@ export async function withRateLimit(provider, connectionId, model, fn, signal = 
         }
         abortListener = onAbort;
         signal.addEventListener("abort", abortListener, { once: true });
-      })
-    );
-  }
+      });
 
-  try {
-    return await Promise.race(racers);
-  } finally {
-    if (queueTimer) clearTimeout(queueTimer);
-    if (signal && abortListener) {
-      signal.removeEventListener("abort", abortListener);
+      try {
+        return await Promise.race([limiter.schedule(scheduleOpts, fn), abortPromise]);
+      } finally {
+        if (abortListener) {
+          signal.removeEventListener("abort", abortListener);
+        }
+      }
+    } else {
+      return await limiter.schedule(scheduleOpts, fn);
     }
+  } catch (err) {
+    // Bottleneck throws when a job exceeds its expiration timeout.
+    // Surface as a clear rate-limit timeout so callers can fallback.
+    if (err?.message?.includes("This job timed out")) {
+      const key = getLimiterKey(provider, connectionId, model);
+      console.log(
+        `⏰ [RATE-LIMIT] ${key} — job expired after ${Math.ceil((maxWaitMs || 0) / 1000)}s in queue, dropping`
+      );
+    }
+    throw err;
   }
 }
 

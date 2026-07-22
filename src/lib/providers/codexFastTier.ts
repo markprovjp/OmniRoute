@@ -8,11 +8,7 @@ function asRecord(value: unknown): JsonRecord {
 
 export type CodexFastTierValue = "priority" | "flex";
 
-export const CODEX_FAST_TIER_DEFAULT_SUPPORTED_MODELS: readonly string[] = [
-  "gpt-5.6-sol",
-  "gpt-5.5",
-  "gpt-5.4",
-];
+export const CODEX_FAST_TIER_DEFAULT_SUPPORTED_MODELS: readonly string[] = ["gpt-5.5", "gpt-5.4"];
 
 export interface CodexGlobalFastServiceTierResolved {
   enabled: boolean;
@@ -29,7 +25,7 @@ export interface CodexGlobalFastServiceTierResolved {
  *
  * Defaults when fields are absent on an enabled config:
  *  - tier            = "priority"  (back-compat: PR #2440 only injected priority)
- *  - supportedModels = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.4"]
+ *  - supportedModels = ["gpt-5.5", "gpt-5.4"] (OpenAI Fast-eligible per models_cache.json)
  */
 export function resolveCodexGlobalFastServiceTier(
   settings: unknown
@@ -90,7 +86,7 @@ function modelMatchesSupportedList(
   supportedModels: readonly string[]
 ): boolean {
   if (typeof model !== "string" || model.length === 0) return false;
-  const normalizedModel = model.trim().toLowerCase().split("/").pop() || "";
+  const normalizedModel = model.trim().toLowerCase();
   if (!normalizedModel) return false;
   for (const supported of supportedModels) {
     const candidate = supported.trim().toLowerCase();

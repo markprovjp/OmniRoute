@@ -141,7 +141,6 @@ import {
   updateFromHeaders,
   updateFromResponseBody,
   initializeRateLimits,
-  isRateLimitQueueTimeoutError,
 } from "../services/rateLimitManager.ts";
 import {
   acquire as acquireAccountSemaphore,
@@ -166,19 +165,6 @@ import {
   getModelFamily,
 } from "../services/modelFamilyFallback.ts";
 import { computeRequestHash, deduplicate, shouldDeduplicate } from "../services/requestDedup.ts";
-import {
-  acquireCodexRequestConcurrency,
-  holdCodexConcurrencyUntilResponseBodyCompletes,
-  isCodexRequestConcurrencyError,
-  isCodexSyntheticConcurrencyError,
-  type CodexSyntheticConcurrencyLease,
-} from "../services/syntheticCodexConcurrency.ts";
-import {
-  acquireCodexAccountConcurrency,
-  holdCodexAccountConcurrencyUntilResponseBodyCompletes,
-  isCodexAccountConcurrencyError,
-  type CodexAccountConcurrencyLease,
-} from "../services/codexAccountConcurrency.ts";
 import { compressContext, estimateTokens, getTokenLimit } from "../services/contextManager.ts";
 import {
   getBackgroundTaskReason,
@@ -3134,40 +3120,9 @@ export async function handleChatCore({
   const dedupRequestBody = { ...translatedBody, model: `${provider}/${model}`, stream };
   const dedupEnabled = shouldDeduplicate(dedupRequestBody);
   const dedupHash = dedupEnabled ? computeRequestHash(dedupRequestBody) : null;
-  const syntheticSessionKey =
-    provider === "codex" ? extractSessionAffinityKey(body, clientRawRequest?.headers) : null;
 
   const executeProviderRequest = async (modelToCall = effectiveModel, allowDedup = false) => {
-    let codexAccountLease: CodexAccountConcurrencyLease | null = null;
-    let codexAccountLeaseConnectionId: string | null = null;
-
-    const switchCodexAccountLease = (
-      nextCredentials: Record<string, unknown> | null | undefined
-    ) => {
-      if (provider !== "codex") return;
-      const nextConnectionId = nextCredentials?.connectionId || connectionId;
-      if (!nextConnectionId) return;
-      const normalizedConnectionId = String(nextConnectionId);
-      if (codexAccountLease && codexAccountLeaseConnectionId === normalizedConnectionId) {
-        return;
-      }
-
-      const nextLease = acquireCodexAccountConcurrency(
-        normalizedConnectionId,
-        toFiniteNumberOrNull(nextCredentials?.maxConcurrent)
-      );
-      codexAccountLease?.release();
-      codexAccountLease = nextLease;
-      codexAccountLeaseConnectionId = normalizedConnectionId;
-    };
-
-    const releaseCodexAccountLease = () => {
-      codexAccountLease?.release();
-      codexAccountLease = null;
-      codexAccountLeaseConnectionId = null;
-    };
-
-    const executeUpstream = async () => {
+    const execute = async () => {
       const executionCredentials = getExecutionCredentials();
       // Track execution credentials for key health recording (to capture selectedKeyId)
       let lastExecCreds = executionCredentials;
@@ -3435,10 +3390,6 @@ export async function handleChatCore({
                   },
                 });
 
-                // Transfer the live account lease before mutating credentials so the
-                // retry is counted against the replacement account, not the failed one.
-                switchCodexAccountLease(nextCreds);
-
                 // Update credentials in-place so getExecutionCredentials() picks up the new account
                 Object.assign(credentials, nextCreds);
 
@@ -3525,58 +3476,6 @@ export async function handleChatCore({
       }
     };
 
-    const execute = async () => {
-      switchCodexAccountLease(credentials);
-
-      let codexConcurrencyLease: CodexSyntheticConcurrencyLease;
-      try {
-        codexConcurrencyLease = acquireCodexRequestConcurrency({
-          provider,
-          apiKeyId: apiKeyInfo?.id,
-          sessionKey: syntheticSessionKey,
-          stream,
-        });
-      } catch (error) {
-        releaseCodexAccountLease();
-        throw error;
-      }
-
-      try {
-        const result = await executeUpstream();
-        if (provider !== "codex") {
-          codexConcurrencyLease.release();
-          return result;
-        }
-
-        if (stream && result.response.body) {
-          let response = holdCodexConcurrencyUntilResponseBodyCompletes(
-            result.response,
-            codexConcurrencyLease
-          );
-          if (codexAccountLease) {
-            response = holdCodexAccountConcurrencyUntilResponseBodyCompletes(
-              response,
-              codexAccountLease
-            );
-            codexAccountLease = null;
-            codexAccountLeaseConnectionId = null;
-          }
-          return {
-            ...result,
-            response,
-          };
-        }
-
-        codexConcurrencyLease.release();
-        releaseCodexAccountLease();
-        return result;
-      } catch (error) {
-        codexConcurrencyLease.release();
-        releaseCodexAccountLease();
-        throw error;
-      }
-    };
-
     if (allowDedup && dedupEnabled && dedupHash) {
       const dedupResult = await deduplicate(dedupHash, execute);
       if (dedupResult.wasDeduplicated) {
@@ -3649,75 +3548,6 @@ export async function handleChatCore({
     );
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false);
-    if (
-      isCodexSyntheticConcurrencyError(error) ||
-      isCodexRequestConcurrencyError(error) ||
-      isCodexAccountConcurrencyError(error)
-    ) {
-      const failureStatus = HTTP_STATUS.RATE_LIMITED;
-      const failureMessage = error.message;
-      const errorType = isCodexSyntheticConcurrencyError(error)
-        ? "codex_synthetic_concurrency"
-        : isCodexAccountConcurrencyError(error)
-          ? "codex_account_concurrency"
-          : "codex_concurrency";
-      appendRequestLog({
-        model,
-        provider,
-        connectionId,
-        status: `FAILED ${error.code}`,
-      }).catch(() => {});
-      persistAttemptLogs({
-        status: failureStatus,
-        error: failureMessage,
-        providerRequest: finalBody || translatedBody,
-        clientResponse: buildErrorBody(failureStatus, failureMessage),
-        claudeCacheMeta: claudePromptCacheLogMeta,
-        cacheSource: "upstream",
-      });
-      persistFailureUsage(failureStatus, error.code);
-      const result = stream
-        ? createStreamingErrorResult(failureStatus, failureMessage, error.code)
-        : createErrorResult(failureStatus, failureMessage, null, error.code, errorType);
-      return {
-        ...result,
-        errorType,
-        errorCode: error.code,
-      };
-    }
-    if (isRateLimitQueueTimeoutError(error)) {
-      const failureStatus = HTTP_STATUS.RATE_LIMITED;
-      const failureMessage = error.message;
-      appendRequestLog({
-        model,
-        provider,
-        connectionId,
-        status: `FAILED ${error.code}`,
-      }).catch(() => {});
-      persistAttemptLogs({
-        status: failureStatus,
-        error: failureMessage,
-        providerRequest: finalBody || translatedBody,
-        clientResponse: buildErrorBody(failureStatus, failureMessage),
-        claudeCacheMeta: claudePromptCacheLogMeta,
-        cacheSource: "upstream",
-      });
-      persistFailureUsage(failureStatus, error.code);
-      const result = stream
-        ? createStreamingErrorResult(failureStatus, failureMessage, error.code)
-        : createErrorResult(
-            failureStatus,
-            failureMessage,
-            null,
-            error.code,
-            "rate_limit_queue_timeout"
-          );
-      return {
-        ...result,
-        errorType: "rate_limit_queue_timeout",
-        errorCode: error.code,
-      };
-    }
     if (isSemaphoreCapacityError(error)) {
       appendRequestLog({
         model,
