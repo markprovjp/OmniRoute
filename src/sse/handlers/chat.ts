@@ -1012,9 +1012,28 @@ async function handleSingleModelChat(
         result.errorType === "codex_synthetic_concurrency" ||
         result.errorType === "codex_concurrency"
       ) {
-        // Stream stalls and local concurrency pressure are not account/quota failures.
-        // Do NOT mark the account unavailable or fan out retries across the pool.
+        // Stream stalls and process/session pressure are not account/quota failures.
+        // Do NOT mark the account unavailable or poison fallback health.
         return result.response;
+      }
+
+      if (result.errorType === "codex_account_concurrency") {
+        // A request raced with another request that acquired this account after
+        // credential selection. Preserve health and retry an eligible idle peer.
+        if (hasForcedConnection) {
+          return result.response;
+        }
+
+        log.info(
+          "AUTH",
+          `Codex account ${accountId}... reached local capacity, trying another eligible account`
+        );
+        excludedConnectionIds.add(credentials.connectionId);
+        lastError = result.error;
+        lastStatus = result.status;
+        requestRetryLastError = result.error;
+        requestRetryLastStatus = result.status;
+        continue;
       }
 
       if (result.errorType === "account_semaphore_capacity") {

@@ -8,6 +8,8 @@ import {
   buildCodexSyntheticConcurrencyKey,
   createCodexRequestConcurrencyController,
   createCodexSyntheticConcurrencyGuard,
+  getCodexApiKeyMaxConcurrent,
+  getCodexProcessMaxConcurrent,
   runWithCodexSyntheticConcurrency,
 } from "../../open-sse/services/syntheticCodexConcurrency.ts";
 
@@ -129,6 +131,29 @@ test("Codex synthetic concurrency error exposes a stable local-capacity code", a
   assert.equal(error.code, CODEX_SYNTHETIC_CONCURRENCY_ERROR_CODE);
   assert.equal(error.maxConcurrent, 4);
   assert.match(error.message, /4 concurrent requests/i);
+});
+
+test("Codex default request fuses leave room for account-aware spillover", () => {
+  const originalApiKeyLimit = process.env.CODEX_API_KEY_MAX_CONCURRENCY;
+  const originalProcessLimit = process.env.CODEX_PROCESS_MAX_CONCURRENCY;
+  delete process.env.CODEX_API_KEY_MAX_CONCURRENCY;
+  delete process.env.CODEX_PROCESS_MAX_CONCURRENCY;
+
+  try {
+    assert.ok(
+      getCodexApiKeyMaxConcurrent() >= 32,
+      "the default API-key fuse must not reject while a large account pool is idle"
+    );
+    assert.ok(
+      getCodexProcessMaxConcurrent() >= 32,
+      "the default process fuse must remain an emergency ceiling after account routing"
+    );
+  } finally {
+    if (originalApiKeyLimit === undefined) delete process.env.CODEX_API_KEY_MAX_CONCURRENCY;
+    else process.env.CODEX_API_KEY_MAX_CONCURRENCY = originalApiKeyLimit;
+    if (originalProcessLimit === undefined) delete process.env.CODEX_PROCESS_MAX_CONCURRENCY;
+    else process.env.CODEX_PROCESS_MAX_CONCURRENCY = originalProcessLimit;
+  }
 });
 
 test("Codex request concurrency caps aggregate work per authenticated API key", () => {

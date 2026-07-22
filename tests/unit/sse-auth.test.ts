@@ -14,6 +14,7 @@ const settingsDb = await import("../../src/lib/db/settings.ts");
 const apiKeysDb = await import("../../src/lib/db/apiKeys.ts");
 const auth = await import("../../src/sse/services/auth.ts");
 const quotaCache = await import("../../src/domain/quotaCache.ts");
+const codexAccountConcurrency = await import("../../open-sse/services/codexAccountConcurrency.ts");
 
 async function resetStorage() {
   core.resetDbInstance();
@@ -60,6 +61,7 @@ async function flushWrites() {
 
 test.beforeEach(async () => {
   await resetStorage();
+  codexAccountConcurrency.__clearCodexAccountConcurrencyForTesting();
 });
 
 test.after(async () => {
@@ -339,6 +341,69 @@ test("getProviderCredentials keeps separate codex affinity per session", async (
   assert.equal(sessionB1.connectionId, second.id);
   assert.equal(sessionA2.connectionId, first.id);
   assert.equal(sessionB2.connectionId, second.id);
+});
+
+test("getProviderCredentials temporarily spills a busy prompt-cache affinity to an idle Codex account", async () => {
+  await settingsDb.updateSettings({ fallbackStrategy: "round-robin", stickyRoundRobinLimit: 10 });
+  const first = await seedConnection("codex", {
+    name: "codex-busy-affinity-a",
+    lastUsedAt: new Date(Date.now() - 20_000).toISOString(),
+  });
+  const second = await seedConnection("codex", {
+    name: "codex-busy-affinity-b",
+    lastUsedAt: new Date(Date.now() - 10_000).toISOString(),
+  });
+  const sessionKey = "prompt-cache:busy-affinity";
+
+  const initial = await auth.getProviderCredentials("codex", null, null, "gpt-5.6-sol", {
+    sessionKey,
+  });
+  assert.equal(initial.connectionId, first.id);
+
+  const busyLease = codexAccountConcurrency.acquireCodexAccountConcurrency(first.id);
+  const spillover = await auth.getProviderCredentials("codex", null, null, "gpt-5.6-sol", {
+    sessionKey,
+  });
+  assert.equal(
+    spillover.connectionId,
+    second.id,
+    "an overlapping prompt-cache request should use the idle eligible account"
+  );
+
+  busyLease.release();
+  const returned = await auth.getProviderCredentials("codex", null, null, "gpt-5.6-sol", {
+    sessionKey,
+  });
+  assert.equal(
+    returned.connectionId,
+    first.id,
+    "temporary spillover must not rewrite the persisted affinity target"
+  );
+});
+
+test("getProviderCredentials never spills a busy Codex affinity outside allowedConnections", async () => {
+  const first = await seedConnection("codex", {
+    name: "codex-allowed-busy-a",
+    lastUsedAt: new Date(Date.now() - 20_000).toISOString(),
+  });
+  await seedConnection("codex", {
+    name: "codex-disallowed-idle-b",
+    lastUsedAt: new Date(Date.now() - 10_000).toISOString(),
+  });
+  const sessionKey = "prompt-cache:allowed-only";
+
+  const initial = await auth.getProviderCredentials("codex", null, [first.id], "gpt-5.6-sol", {
+    sessionKey,
+  });
+  assert.equal(initial.connectionId, first.id);
+
+  const busyLease = codexAccountConcurrency.acquireCodexAccountConcurrency(first.id);
+  const constrained = await auth.getProviderCredentials("codex", null, [first.id], "gpt-5.6-sol", {
+    sessionKey,
+  });
+  busyLease.release();
+
+  assert.equal(constrained.connectionId, first.id);
 });
 
 test("getProviderCredentials spills spaced synthetic Codex retries across available accounts", async () => {

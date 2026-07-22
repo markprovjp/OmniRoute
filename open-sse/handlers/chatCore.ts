@@ -171,7 +171,14 @@ import {
   holdCodexConcurrencyUntilResponseBodyCompletes,
   isCodexRequestConcurrencyError,
   isCodexSyntheticConcurrencyError,
+  type CodexSyntheticConcurrencyLease,
 } from "../services/syntheticCodexConcurrency.ts";
+import {
+  acquireCodexAccountConcurrency,
+  holdCodexAccountConcurrencyUntilResponseBodyCompletes,
+  isCodexAccountConcurrencyError,
+  type CodexAccountConcurrencyLease,
+} from "../services/codexAccountConcurrency.ts";
 import { compressContext, estimateTokens, getTokenLimit } from "../services/contextManager.ts";
 import {
   getBackgroundTaskReason,
@@ -3131,6 +3138,35 @@ export async function handleChatCore({
     provider === "codex" ? extractSessionAffinityKey(body, clientRawRequest?.headers) : null;
 
   const executeProviderRequest = async (modelToCall = effectiveModel, allowDedup = false) => {
+    let codexAccountLease: CodexAccountConcurrencyLease | null = null;
+    let codexAccountLeaseConnectionId: string | null = null;
+
+    const switchCodexAccountLease = (
+      nextCredentials: Record<string, unknown> | null | undefined
+    ) => {
+      if (provider !== "codex") return;
+      const nextConnectionId = nextCredentials?.connectionId || connectionId;
+      if (!nextConnectionId) return;
+      const normalizedConnectionId = String(nextConnectionId);
+      if (codexAccountLease && codexAccountLeaseConnectionId === normalizedConnectionId) {
+        return;
+      }
+
+      const nextLease = acquireCodexAccountConcurrency(
+        normalizedConnectionId,
+        toFiniteNumberOrNull(nextCredentials?.maxConcurrent)
+      );
+      codexAccountLease?.release();
+      codexAccountLease = nextLease;
+      codexAccountLeaseConnectionId = normalizedConnectionId;
+    };
+
+    const releaseCodexAccountLease = () => {
+      codexAccountLease?.release();
+      codexAccountLease = null;
+      codexAccountLeaseConnectionId = null;
+    };
+
     const executeUpstream = async () => {
       const executionCredentials = getExecutionCredentials();
       // Track execution credentials for key health recording (to capture selectedKeyId)
@@ -3399,6 +3435,10 @@ export async function handleChatCore({
                   },
                 });
 
+                // Transfer the live account lease before mutating credentials so the
+                // retry is counted against the replacement account, not the failed one.
+                switchCodexAccountLease(nextCreds);
+
                 // Update credentials in-place so getExecutionCredentials() picks up the new account
                 Object.assign(credentials, nextCreds);
 
@@ -3486,12 +3526,20 @@ export async function handleChatCore({
     };
 
     const execute = async () => {
-      const codexConcurrencyLease = acquireCodexRequestConcurrency({
-        provider,
-        apiKeyId: apiKeyInfo?.id,
-        sessionKey: syntheticSessionKey,
-        stream,
-      });
+      switchCodexAccountLease(credentials);
+
+      let codexConcurrencyLease: CodexSyntheticConcurrencyLease;
+      try {
+        codexConcurrencyLease = acquireCodexRequestConcurrency({
+          provider,
+          apiKeyId: apiKeyInfo?.id,
+          sessionKey: syntheticSessionKey,
+          stream,
+        });
+      } catch (error) {
+        releaseCodexAccountLease();
+        throw error;
+      }
 
       try {
         const result = await executeUpstream();
@@ -3501,19 +3549,30 @@ export async function handleChatCore({
         }
 
         if (stream && result.response.body) {
+          let response = holdCodexConcurrencyUntilResponseBodyCompletes(
+            result.response,
+            codexConcurrencyLease
+          );
+          if (codexAccountLease) {
+            response = holdCodexAccountConcurrencyUntilResponseBodyCompletes(
+              response,
+              codexAccountLease
+            );
+            codexAccountLease = null;
+            codexAccountLeaseConnectionId = null;
+          }
           return {
             ...result,
-            response: holdCodexConcurrencyUntilResponseBodyCompletes(
-              result.response,
-              codexConcurrencyLease
-            ),
+            response,
           };
         }
 
         codexConcurrencyLease.release();
+        releaseCodexAccountLease();
         return result;
       } catch (error) {
         codexConcurrencyLease.release();
+        releaseCodexAccountLease();
         throw error;
       }
     };
@@ -3590,12 +3649,18 @@ export async function handleChatCore({
     );
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false);
-    if (isCodexSyntheticConcurrencyError(error) || isCodexRequestConcurrencyError(error)) {
+    if (
+      isCodexSyntheticConcurrencyError(error) ||
+      isCodexRequestConcurrencyError(error) ||
+      isCodexAccountConcurrencyError(error)
+    ) {
       const failureStatus = HTTP_STATUS.RATE_LIMITED;
       const failureMessage = error.message;
       const errorType = isCodexSyntheticConcurrencyError(error)
         ? "codex_synthetic_concurrency"
-        : "codex_concurrency";
+        : isCodexAccountConcurrencyError(error)
+          ? "codex_account_concurrency"
+          : "codex_concurrency";
       appendRequestLog({
         model,
         provider,
